@@ -190,7 +190,3 @@ node --test tests/test_conversation_ui.cjs
 ## 许可证
 
 源码使用 [AGPL-3.0-only](LICENSE)，第三方依赖见 [THIRD_PARTY.md](THIRD_PARTY.md)。公开二进制时应同时提供对应源码和构建说明。用户导入的论文及其他第三方资料保留原权利归属，不包含在本项目代码许可中。
-
-## README 图片说明
-
-封面是为项目设计的 SVG；功能图片来自真实前端页面，以 2 倍像素密度截取并保存为无损 PNG，没有手绘或重排界面。示例内容由人工编写，不代表模型输出质量。图片来源、尺寸和发布说明见[图片说明](docs/assets/readme/README.md)。
