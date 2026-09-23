@@ -1,0 +1,28 @@
+name: Source and SQLite compatibility checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install -r requirements-lock-windows-py312.txt
+      - run: python scripts/build_native.py
+      - run: python -m pytest tests -q --basetemp=work/ci-tests
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/test_conversation_ui.cjs
+      - run: python scripts/prepare_release.py --check-only
+      # MySQL integration and desktop packaging require the native MySQL SDK.
+      # They are verified separately; this hosted job does not claim coverage.
+      - run: python scripts/prepare_release.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AIReader-public-source
+          path: dist/public-source.zip

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300">
+  <rect width="1200" height="300" rx="24" fill="#f5f8f7"/>
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <text x="60" y="54" fill="#25483f" font-size="24" font-weight="700">PaperPilot · local research workflow</text>
+    <g fill="#fff" stroke="#cbded8" stroke-width="2">
+      <rect x="60" y="105" width="190" height="105" rx="14"/><rect x="335" y="105" width="190" height="105" rx="14"/>
+      <rect x="610" y="105" width="190" height="105" rx="14"/><rect x="885" y="105" width="250" height="105" rx="14"/>
+    </g>
+    <g fill="#25483f" font-size="18" font-weight="700" text-anchor="middle">
+      <text x="155" y="145">研究问题</text><text x="430" y="145">论文与 PDF</text><text x="705" y="145">证据与比较</text><text x="1010" y="145">报告与持续讨论</text>
+    </g>
+    <g fill="#6d8580" font-size="14" text-anchor="middle">
+      <text x="155" y="174">输入目标与范围</text><text x="430" y="174">检索或手动导入</text><text x="705" y="174">回到原文核查</text><text x="1010" y="174">保存到本地工作区</text>
+    </g>
+    <g stroke="#3b7566" stroke-width="3" fill="none"><path d="M250 157h70"/><path d="M525 157h70"/><path d="M800 157h70"/></g>
+    <g fill="#3b7566"><path d="m315 150 12 7-12 7z"/><path d="m590 150 12 7-12 7z"/><path d="m865 150 12 7-12 7z"/></g>
+  </g>
+</svg>

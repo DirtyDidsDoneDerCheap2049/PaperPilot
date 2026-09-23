@@ -1,0 +1,14 @@
+.desktop-toolbar{display:flex;align-items:center;gap:10px;padding:10px 20px;border-bottom:1px solid var(--border);flex-wrap:wrap;background:var(--bg-panel,var(--bg-main));flex-shrink:0}
+.desktop-toolbar>span{margin-right:auto;font-size:12px;color:var(--text-muted)}
+.desktop-modal .settings-box{width:min(700px,calc(100vw - 40px));max-height:88vh;border-radius:18px;padding:28px;box-shadow:0 20px 80px #0003}
+.desktop-modal-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.desktop-modal-heading h2{font-size:21px;margin:0}
+.desktop-modal .settings-scroll{overflow:auto;max-height:70vh;padding:0 8px 8px 0}
+.desktop-lead{line-height:1.7;color:var(--text-secondary);margin:8px 0 22px}
+.setup-steps{padding-left:24px;line-height:1.7}.setup-steps li{padding:8px}.setup-steps p{margin:5px 0;color:var(--text-muted);font-size:14px}
+.desktop-notice,.desktop-fulltext-note{background:rgba(74,125,210,.07);border:1px solid rgba(74,125,210,.18);border-radius:10px;padding:14px;font-size:13px;line-height:1.75;color:var(--text-secondary)}
+.desktop-fulltext-note{max-width:650px;margin:22px auto;text-align:left}
+.desktop-action-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}.desktop-modal .settings-field{margin:12px 0}.desktop-modal .settings-field input,.desktop-modal select{min-width:0;border-radius:7px;padding:9px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border)}
+.desktop-modal .settings-note{line-height:1.75;font-size:12px}.setup-success{color:#258657}.setup-error{color:#d04f4f}
+.desktop-job{padding:16px;border:1px solid var(--border);border-radius:10px;margin:12px 0}.desktop-job code{display:block;font-size:11px;color:var(--text-muted);margin-top:8px}.desktop-job p{font-size:13px;line-height:1.6}.job-time{float:right;color:var(--text-muted);font-size:12px}.desktop-empty{padding:24px;color:var(--text-muted)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent-blue,#477de0);outline-offset:3px}

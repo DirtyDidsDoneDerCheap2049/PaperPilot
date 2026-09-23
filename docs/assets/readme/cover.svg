@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="420" viewBox="0 0 1600 420">
+  <defs><linearGradient id="bg" x1="0" x2="1"><stop stop-color="#173b35"/><stop offset="1" stop-color="#397466"/></linearGradient></defs>
+  <rect width="1600" height="420" rx="28" fill="url(#bg)"/>
+  <circle cx="1320" cy="80" r="240" fill="#6ba898" opacity=".12"/><circle cx="1450" cy="350" r="260" fill="#9bd0c0" opacity=".08"/>
+  <g fill="none" stroke="#d5f1e8" stroke-width="3" opacity=".85"><path d="M1100 102h330v220h-330z"/><path d="M1140 145h250M1140 185h180M1140 225h225M1140 265h145"/><path d="M1020 120h55v240h-55z"/></g>
+  <g font-family="Segoe UI,Arial,sans-serif" fill="#f5fffb"><text x="94" y="150" font-size="72" font-weight="700">PaperPilot</text><text x="98" y="212" font-size="28" opacity=".92">An AI agent for investigating research gaps</text><text x="98" y="278" font-size="21" opacity=".72">Start with a direction · check prior work · test your hypothesis</text></g>
+  <path d="M100 330h260" stroke="#b9e6d9" stroke-width="5" stroke-linecap="round"/>
+</svg>

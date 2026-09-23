@@ -1,0 +1,4 @@
+{
+  "json.hpp": {"url": "https://raw.githubusercontent.com/nlohmann/json/v3.11.3/single_include/nlohmann/json.hpp", "sha256": "9bea4c8066ef4a1c206b2be5a36302f8926f7fdc6087af5d20b417d0cf103ea6"},
+  "sqlite.zip": {"url": "https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip", "sha256": "77823cb110929c2bcb0f5d48e4833b5c59a8a6e40cdea3936b99e199dbbe5784"}
+}
