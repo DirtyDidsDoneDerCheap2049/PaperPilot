@@ -195,7 +195,7 @@
   "tests/test_conversation_research.py": "899b47b4227c748d631427f788d23d8079825c696e8589573fbd60ee0ed374fc",
   "tests/test_conversation_ui.cjs": "42762c9841aa17f5a005a9c94dd6e2a541e4ac5317e70e103306c84e0225c4d5",
   "tests/test_core.py": "b7e3efe0fa28c2bc25a0b19350a7c8efa6bdf84fcf8f24dfa9a809bad0adb41e",
-  "tests/test_desktop_delivery.py": "972a2b0ae829743b63b996a15008560c627022a4821caf4e10a0a73cc4cab1cb",
+  "tests/test_desktop_delivery.py": "4f663549b5e961b4b0c9d4dba096bdb45bbc998a105ba21d7278d75d43bea1f3",
   "tests/test_direction_research.py": "82b5acbed4ba622df35bdbf87be235a76480ab27130d5e61ebe7fc8ee5106a7c",
   "tests/test_evidence_cache_usage.py": "884953df505f800403d7462f45453c5e64a1f1cbee6fe2f029ead20f8935a674",
   "tests/test_generic_agent.py": "50b149931eb2090968965368d1c3d880619e2040366733d3131f780a35cbb021",

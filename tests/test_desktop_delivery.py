@@ -352,16 +352,25 @@ def test_discussion_to_research_keeps_context_and_uploaded_papers(tmp_path,monke
 def test_native_exclusive_owner_and_hundred_completions(tmp_path):
     path=tmp_path/'tasks.db'
     owner=Native(path)
+    other=None
     try:
+        # Popen only creates the process; ping confirms it owns the lock.
+        # Without this barrier the second process can win the startup race.
+        assert owner.call('ping')['ok']
         other=Native(path)
         assert other.p.wait(timeout=5)!=0
-        other.p.stdin.close();other.p.stdout.close();other.p.stderr.close()
+        assert other.p.stderr.read().strip()=='workspace_already_open'
         for i in range(100):
             assert owner.submit(id=f'j{i}',key=f'k{i}')['ok']
             job=owner.call('claim')['data']
             assert owner.call('finish',id=job['id'],token=job['token'],status='succeeded')['ok']
         assert len(owner.call('list')['data'])==100
-    finally: owner.close()
+    finally:
+        try:
+            if other is not None:
+                if other.p.poll() is None:other.p.kill()
+                other.p.communicate(timeout=5)
+        finally:owner.close()
 
 
 def test_parent_pipe_eof_stops_worker(tmp_path):
