@@ -16,6 +16,10 @@ class LLMOutputError(RuntimeError):
     """A response arrived, but it is not a complete usable answer."""
 
 
+class LLMStopError(LLMOutputError):
+    """Account/budget failure: stop replenishing parallel requests."""
+
+
 def check_output(finish_reason, content):
     if finish_reason == 'length':
         raise LLMOutputError('达到本次请求的输出预算，回答未完成；可在设置中增加输出预算或调整思考强度后重试。这不是模型上下文上限')
@@ -33,7 +37,8 @@ class DeepSeekClient:
                  max_output_tokens: int | None = None, timeout_seconds: int = 600,
                  regular_effort: str = 'max', analysis_effort: str = 'max',
                  capability_profile: str = 'auto', token_parameter: str = 'max_tokens',
-                 json_output: str = 'auto', extra_body_params: dict | None = None):
+                 json_output: str = 'auto', extra_body_params: dict | None = None,
+                 context_window: int | None = None):
         self.api_key_env = api_key_env
         self._base_url = base_url
         self._api_key = os.getenv(api_key_env, "")
@@ -55,53 +60,82 @@ class DeepSeekClient:
         self.token_parameter=token_parameter
         self.json_output=json_output
         self.extra_body_params=extra_body_params or {}
+        self.context_window=context_window
         self.activity_callback = None
+        self.usage_records = []
+        self.local_evidence_cache_hits = 0
+
+    def _record_usage(self, call_id, model, value):
+        from src.llm.usage import normalize_usage
+        usage = normalize_usage(value)
+        if usage is not None and not any(row['call'] == call_id for row in self.usage_records):
+            self.usage_records.append({'call': call_id, 'model': model, 'usage': usage})
+        return usage
+
+    def usage_summary(self):
+        from src.llm.usage import summarize_usage
+        return summarize_usage(self.usage_records, self.calls, self.local_evidence_cache_hits)
 
     async def _activity(self, **data):
         if self.activity_callback:
-            await self.activity_callback(data)
+            from src.llm.request_context import request_metadata
+            await self.activity_callback({**request_metadata.get(), **data})
 
-    async def _stream_response(self, messages, options):
+    async def _stream_response(self, messages, options, call_id, started):
         parts, finish_reason = [], None
         received, last_update = 0, 0.0
-        pending, last_delta = '', 0.0
+        pending, pending_chars, last_delta = [], 0, 0.0
         reasoning_tail, reasoning_chars, last_thinking = '', 0, 0.0
+        first_reasoning_ms, first_content_ms = None, None
+        usage = None
         stream = await self.client.chat.completions.create(messages=messages, stream=True, **options)
         try:
             async for chunk in stream:
+                if getattr(chunk, 'usage', None) is not None:
+                    usage = chunk.usage
                 if not chunk.choices:
                     continue
                 choice = chunk.choices[0]
                 finish_reason = getattr(choice, 'finish_reason', None) or finish_reason
                 reasoning = getattr(choice.delta, 'reasoning_content', None) or ''
                 if reasoning:
+                    if first_reasoning_ms is None:
+                        first_reasoning_ms = round((time.monotonic()-started)*1000)
                     reasoning_chars += len(reasoning)
                     reasoning_tail = (reasoning_tail + reasoning)[-400:]
-                    if time.monotonic() - last_thinking >= .35:
-                        await self._activity(phase='thinking', call=self.calls,
+                    if time.monotonic() - last_thinking >= .1:
+                        await self._activity(phase='thinking', call=call_id,
                                              preview=reasoning_tail.strip().split('\n')[-1][-220:],
                                              reasoning_chars=reasoning_chars)
                         last_thinking = time.monotonic()
                 text = getattr(choice.delta, 'content', None) or ''
                 if text:
+                    if first_content_ms is None:
+                        first_content_ms = round((time.monotonic()-started)*1000)
                     parts.append(text)
                     received += len(text)
-                    pending += text
-                    if time.monotonic() - last_delta >= .2 or len(pending) >= 2000:
-                        await self._activity(phase='delta', content=pending, call=self.calls)
-                        pending = ''
+                    pending.append(text)
+                    pending_chars += len(text)
+                    if time.monotonic() - last_delta >= .05 or pending_chars >= 16384:
+                        await self._activity(phase='delta', content=''.join(pending), call=call_id)
+                        pending, pending_chars = [], 0
                         last_delta = time.monotonic()
                 # Only a bounded live preview; reasoning never enters response content or reports.
                 if time.monotonic() - last_update >= 1:
-                    await self._activity(phase='receiving' if received else 'thinking' if reasoning_chars else 'processing', received_chars=received)
+                    await self._activity(phase='receiving' if received else 'thinking' if reasoning_chars else 'processing', call=call_id, received_chars=received)
                     last_update = time.monotonic()
             content = ''.join(parts)
             if pending:
-                await self._activity(phase='delta', content=pending, call=self.calls)
+                await self._activity(phase='delta', content=''.join(pending), call=call_id)
             check_output(finish_reason, content)
-            await self._activity(phase='received', received_chars=received)
+            measured_usage = self._record_usage(call_id, options['model'], usage)
+            await self._activity(phase='received', call=call_id, received_chars=received,
+                                 duration_ms=round((time.monotonic()-started)*1000),
+                                 first_reasoning_ms=first_reasoning_ms, first_content_ms=first_content_ms,
+                                 reasoning_chars=reasoning_chars, usage=measured_usage)
             return content
         finally:
+            self._record_usage(call_id, options['model'], usage)
             await stream.close()
 
     def configure(self, *, api_key: str | None = None,
@@ -111,7 +145,8 @@ class DeepSeekClient:
                   max_output_tokens: int | None = None, timeout_seconds: int | None = None,
                   regular_effort: str | None = None, analysis_effort: str | None = None,
                   capability_profile: str | None = None, token_parameter: str | None = None,
-                  json_output: str | None = None, extra_body_params: dict | None = None) -> None:
+                  json_output: str | None = None, extra_body_params: dict | None = None,
+                  context_window: int | None = None) -> None:
         """Apply settings changed at runtime in place.
 
         Kept in-place on purpose: the orchestrator and agents hold a reference to
@@ -119,6 +154,8 @@ class DeepSeekClient:
         """
         if fast_model:
             self.fast_model = fast_model
+        if context_window is not None:
+            self.context_window=context_window or None
         if reasoning_model:
             self.reasoning_model = reasoning_model
         rebuild = False
@@ -173,8 +210,9 @@ class DeepSeekClient:
 
     def _reserve_call(self):
         if self.calls >= self.max_calls:
-            raise RuntimeError(f'本次任务达到 {self.max_calls} 次模型调用上限；已有资料保留，未完成分析不能作为完整结论')
+            raise LLMStopError(f'本次任务达到 {self.max_calls} 次模型调用上限；已有资料保留，未完成分析不能作为完整结论')
         self.calls += 1
+        return self.calls
 
     def _ensure_ready(self):
         if not self._ready or self.client is None:
@@ -185,16 +223,19 @@ class DeepSeekClient:
         self._ensure_ready()
         options = self.request_options(model, purpose=purpose, structured=structured)
         for attempt in range(max_retries + 1):
+            call_id = None
             try:
-                self._reserve_call()
-                await self._activity(phase='waiting', model=model, call=self.calls, attempt=attempt+1,
+                call_id = self._reserve_call()
+                started = time.monotonic()
+                await self._activity(phase='waiting', model=model, call=call_id, attempt=attempt+1,
                                      timeout_seconds=self.timeout_seconds, received_chars=0,
                                      presentation=getattr(self,'presentation','research'))
                 if self.activity_callback:
-                    return await self._stream_response(messages, options)
+                    return await self._stream_response(messages, options, call_id, started)
                 resp = await self.client.chat.completions.create(
                     messages=messages, stream=False, **options
                 )
+                self._record_usage(call_id, model, getattr(resp, 'usage', None))
                 choice = resp.choices[0]
                 content = choice.message.content or ""
                 check_output(getattr(choice, 'finish_reason', None), content)
@@ -202,14 +243,21 @@ class DeepSeekClient:
             except Exception as e:
                 status = getattr(e, 'status_code', None)
                 if status == 402:
-                    await self._activity(phase='failed', error_type='ProviderBalanceError')
-                    raise LLMOutputError('模型服务余额不足，研究未完成。已取得的资料和分析保留；补充余额后可继续处理。') from e
+                    await self._activity(phase='failed', call=call_id, error_type='ProviderBalanceError')
+                    raise LLMStopError('模型服务余额不足，研究未完成。已取得的资料和分析保留；补充余额后可继续处理。') from e
                 if attempt == max_retries or (status is not None and status < 500 and status != 429) or isinstance(e, RuntimeError):
-                    await self._activity(phase='failed', error_type=type(e).__name__)
+                    if call_id is not None:
+                        await self._activity(phase='failed', call=call_id, error_type=type(e).__name__)
                     raise
                 logger.warning('Model call retry %s (%s)', attempt + 1, type(e).__name__)
-                await self._activity(phase='retrying', retry_in_seconds=min(2 ** attempt, 8))
-                await asyncio.sleep(min(2 ** attempt, 8))
+                delay = min(2 ** attempt, 8)
+                headers = getattr(getattr(e, 'response', None), 'headers', {})
+                try:
+                    delay = max(delay, min(30, float(headers.get('retry-after', delay))))
+                except (TypeError, ValueError):
+                    pass
+                await self._activity(phase='retrying', call=call_id, retry_in_seconds=delay)
+                await asyncio.sleep(delay)
 
     async def chat(self, messages: list[dict],
                    model: str | None = None, *, purpose='regular') -> str:
@@ -220,14 +268,17 @@ class DeepSeekClient:
         """Yield text deltas from a streaming completion."""
         self._ensure_ready()
         options = self.request_options(model or self.fast_model)
-        self._reserve_call()
+        call_id = self._reserve_call()
         stream = await self.client.chat.completions.create(
             messages=style_messages(messages), stream=True, **options
         )
         parts = []
         finish_reason = None
+        usage = None
         try:
             async for chunk in stream:
+                if getattr(chunk, 'usage', None) is not None:
+                    usage = chunk.usage
                 if not chunk.choices:
                     continue
                 choice = chunk.choices[0]
@@ -238,6 +289,7 @@ class DeepSeekClient:
                     yield delta.content
             check_output(finish_reason, ''.join(parts))
         finally:
+            self._record_usage(call_id, options['model'], usage)
             close = getattr(stream, 'close', None)
             if close:
                 await close()

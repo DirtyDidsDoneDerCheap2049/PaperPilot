@@ -1,4 +1,4 @@
-import json, re, shutil, uuid
+import json, re, uuid
 from datetime import datetime
 from pathlib import Path
 from fastapi import APIRouter, Request, HTTPException, UploadFile, File
@@ -16,6 +16,11 @@ class PaperStatusRequest(BaseModel):
 class ReportRenameRequest(BaseModel):
     path: str
     new_name: str
+
+
+class ReportTitleRequest(BaseModel):
+    path: str
+    title: str
 
 
 class GptHandoffRequest(BaseModel):
@@ -322,7 +327,9 @@ def _repair_fulltext_statuses(db):
 
 @router.get("/api/papers")
 async def list_papers(request: Request, q: str = "", limit: int = 200,
-                      include_off_topic: bool = False, status: str = ""):
+                      include_off_topic: bool = False, status: str = "",
+                      category: str = "", include_duplicates: bool = False, offset: int = 0,
+                      temporal: str = '', prior: str = '', training: str = '', mechanism: str = ''):
     db = request.app.state.db
     _repair_fulltext_statuses(db)
     limit = max(1, min(limit, 500))
@@ -334,40 +341,59 @@ async def list_papers(request: Request, q: str = "", limit: int = 200,
     params = []
     if q.strip():
         term = f"%{q.strip()}%"
-        clauses.append("(title LIKE ? OR abstract LIKE ? OR authors_json LIKE ? OR venue LIKE ?)")
-        params.extend([term, term, term, term])
+        clauses.append("(p.title LIKE ? OR p.abstract LIKE ? OR p.authors_json LIKE ? OR p.venue LIKE ? OR o.summary LIKE ? OR o.tags_json LIKE ? OR p.id LIKE ? OR EXISTS (SELECT 1 FROM papers alias_p JOIN paper_organization alias_o ON alias_o.paper_id=alias_p.id WHERE alias_o.canonical_id=p.id AND (alias_p.title LIKE ? OR alias_p.abstract LIKE ? OR alias_p.id LIKE ?)))")
+        params.extend([term] * 10)
     if status:
         clauses.append("COALESCE(retrieval_status, 'metadata_only') = ?")
         params.append(status)
     elif not include_off_topic:
         clauses.append("(retrieval_status IS NULL OR retrieval_status != 'off_topic')")
-    params.append(limit)
+    if not include_duplicates:
+        clauses.append('(o.canonical_id IS NULL OR o.canonical_id=p.id)')
+    if category:
+        clauses.append("COALESCE(o.category,CASE WHEN p.id LIKE 'prior:%' THEN '先验笔记' ELSE '待分类' END)=?")
+        params.append(category)
+    join = 'FROM papers p LEFT JOIN paper_organization o ON o.paper_id=p.id'
+    from src.knowledge.library_facets import FACETS,UNSPECIFIED,matches_facets
+    selected={k:v for k,v in {'temporal':temporal,'prior':prior,'training':training,'mechanism':mechanism}.items() if v}
+    if any(v not in FACETS[k]['values']+[UNSPECIFIED] for k,v in selected.items()):
+        raise HTTPException(400,'未知筛选标签')
+    total = db.fetchone(f"SELECT COUNT(*) AS n {join} WHERE {' AND '.join(clauses)}", tuple(params))['n']
+    sql_page='' if selected else 'LIMIT ? OFFSET ?'
+    if not selected:params.extend([limit, max(0, offset)])
     rows = db.fetchall(
-        f"""SELECT * FROM papers
+        f"""SELECT p.*,o.category,o.tags_json,o.summary,o.facets_json,o.canonical_id {join}
            WHERE {' AND '.join(clauses)}
-           ORDER BY CASE WHEN id LIKE 'prior:%' THEN 1 ELSE 0 END,
-                    updated_at DESC, created_at DESC
-           LIMIT ?""",
+           ORDER BY CASE WHEN p.id LIKE 'prior:%' THEN 1 ELSE 0 END,
+                    p.updated_at DESC, p.created_at DESC,p.id
+           {sql_page}""",
         tuple(params),
     )
-    papers = [_paper_view(r) for r in rows]
-    return {"papers": papers, "count": len(papers)}
+    if selected:
+        rows=[r for r in rows if matches_facets(r,selected)]
+        total=len(rows)
+        rows=rows[max(0,offset):max(0,offset)+limit]
+    from src.knowledge.library_organizer import organization_view
+    counts = {r['canonical_id']:r['n'] for r in db.fetchall('SELECT canonical_id,COUNT(*) AS n FROM paper_organization GROUP BY canonical_id')}
+    papers = [{**_paper_view(r), **organization_view(r), 'duplicate_count':counts.get(r.get('canonical_id') or r['id'],1)-1} for r in rows]
+    return {"papers": papers, "count": len(papers), "total":total, "offset":max(0,offset), "limit":limit}
 
 
 @router.get('/api/missing-papers')
-async def scoped_missing_papers(request: Request, session_id: str = ''):
-    db=request.app.state.db
-    if session_id:
-        row=db.fetchone('SELECT search_log_json FROM gap_analyses WHERE session_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1',(session_id,))
-        log=_json_loads((row or {}).get('search_log_json'),{})
-        ids=list(dict.fromkeys(p.get('id') for p in log.get('papers',[]) if isinstance(p,dict) and p.get('id')))
-        papers=[]
-        for pid in ids:
-            paper=db.fetchone("SELECT * FROM papers WHERE id=? AND retrieval_status IN ('missing_fulltext','metadata_only','parse_failed','failed')",(pid,))
-            if paper:papers.append(_paper_view(paper))
-    else:
-        papers=[_paper_view(p) for p in db.fetchall("SELECT * FROM papers WHERE retrieval_status IN ('missing_fulltext','metadata_only','parse_failed','failed') ORDER BY updated_at DESC")]
-    return {'papers':papers,'scope':'session' if session_id else 'workspace'}
+async def scoped_missing_papers(request: Request, session_id: str = '', scope: str = '',
+                                q: str = '', limit: int = 100, offset: int = 0):
+    from src.knowledge.paper_access import missing_papers
+    # Keep existing API callers' workspace/session default; the desktop explicitly requests research scope.
+    scope=scope or ('session' if session_id else 'workspace')
+    if scope not in {'session','research','workspace'}:
+        raise HTTPException(400,'不支持的全文列表范围')
+    if scope=='session' and not session_id:
+        return {'papers':[],'scope':'session','total':0,'count':0,'summary':{}}
+    result=missing_papers(request.app.state.db,_ws_root(request),scope,session_id,q,max(1,min(limit,500)),max(0,offset))
+    result['papers']=[{**_paper_view(p),**{k:v for k,v in p.items() if k in {
+        'canonical_id','category','source_links','source_ids','duplicate_count','used_in_research',
+        'in_current_session','usage_priority','access_status','usage_label'}}} for p in result['papers']]
+    return result
 
 
 def _safe_upload_name(name: str, default: str = "upload.pdf") -> str:
@@ -475,7 +501,18 @@ async def paper_detail(paper_id: str, request: Request):
         "profile": profile,
         "evidence": evidence,
         "preview_markdown": preview,
+        **_paper_organization_detail(db, paper_id),
     }
+
+
+def _paper_organization_detail(db, paper_id):
+    from src.knowledge.library_organizer import canonical_id, organization_view
+    root = canonical_id(db, paper_id)
+    org = db.fetchone('SELECT * FROM paper_organization WHERE paper_id=?', (paper_id,))
+    sources = db.fetchall('SELECT p.* FROM papers p JOIN paper_organization o ON o.paper_id=p.id WHERE o.canonical_id=? ORDER BY p.id', (root,))
+    paper=db.fetchone('SELECT id,title FROM papers WHERE id=?',(paper_id,)) or {'id':paper_id}
+    return {'organization':organization_view({**paper,**(org or {})}),
+            'duplicate_records':[_paper_view(r) for r in sources] if len(sources)>1 else []}
 
 
 @router.post("/api/papers/{paper_id}/fulltext")
@@ -552,7 +589,56 @@ async def rename_report(body: ReportRenameRequest, request: Request):
            WHERE report_path IN (?, ?)""",
         (new_abs, old_abs, old_rel),
     )
+    db.execute('UPDATE report_labels SET path=? WHERE path=?',(new_rel,old_rel))
     return {"status": "renamed", "old_path": old_rel, "path": new_rel}
+
+
+@router.get('/api/reports')
+async def reports(request: Request):
+    from src.analysis.report_titles import list_reports
+    return {'reports':[{k:v for k,v in r.items() if k not in {'question','excerpt','content_sha256'}}
+                       for r in list_reports(request.app.state.db,_ws_root(request))]}
+
+
+@router.patch('/api/reports/title')
+async def set_report_title(body: ReportTitleRequest,request: Request):
+    from src.analysis.report_titles import report_record,save_title
+    file=_check_report_path(_ws_root(request),body.path)
+    try:
+        record=report_record(request.app.state.db,_ws_root(request),_report_rel(_ws_root(request),file))
+        save_title(request.app.state.db,record,body.title,'人工命名')
+    except (OSError,ValueError) as exc:raise HTTPException(400,str(exc)) from exc
+    return {'path':record['path'],'title':body.title.strip()}
+
+
+@router.post('/api/reports/auto-name')
+async def auto_name_reports(request: Request):
+    from src.analysis.report_titles import list_reports,model_titles,save_title,report_record
+    db=request.app.state.db;ws=_ws_root(request)
+    records=[r for r in list_reports(db,ws) if r['named_by']!='模型命名']
+    if not records:return {'named':0}
+    if len(records)>20:raise HTTPException(400,'单次最多命名20份报告')
+    if not request.app.state.llm._ready:raise HTTPException(409,'请先配置模型 API')
+    lock=getattr(request.app.state,'report_naming_busy',False)
+    if lock:raise HTTPException(409,'正在命名报告，请稍候')
+    request.app.state.report_naming_busy=True
+    try:
+        import copy
+        llm=copy.copy(request.app.state.llm)
+        llm.calls=0;llm.max_calls=4;llm.activity_callback=None;llm.stream_callback=None
+        titles=await model_titles(llm,records)
+        with db.transaction():
+            for record in records:
+                current=report_record(db,ws,record['path'])
+                if current['content_sha256']!=record['content_sha256'] or current['title']!=record['title']:
+                    raise ValueError('命名期间报告发生变化，本次没有应用')
+            for record in records:save_title(db,record,titles[record['path']],'模型命名')
+        return {'named':len(records),'model_calls':llm.calls}
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning('Report naming failed: %s',type(exc).__name__)
+        raise HTTPException(502,'自动命名未完成，原名称和正文保留；请检查模型连接后重试') from exc
+    finally:request.app.state.report_naming_busy=False
 
 
 @router.delete("/api/reports")
@@ -569,6 +655,7 @@ async def delete_report(path: str, request: Request):
         "UPDATE gap_analyses SET report_path=NULL WHERE report_path IN (?, ?)",
         (abs_path, rel),
     )
+    db.execute('DELETE FROM report_labels WHERE path=?',(rel,))
     return {"status": "deleted", "path": rel}
 
 

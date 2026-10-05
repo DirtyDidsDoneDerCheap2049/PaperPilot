@@ -19,6 +19,14 @@ class KBManager:
             authors_json = json.dumps(
                 paper.get("authors", []), ensure_ascii=False
             )
+            from src.analysis.research_plan import normalize_publication_metadata
+            paper=normalize_publication_metadata(paper)
+            published=paper.get('publication_date') or (existing or {}).get('publication_date')
+            date_source=paper.get('date_source') or (existing or {}).get('date_source')
+            old_date=(existing or {}).get('publication_date') or ''
+            old_source=str((existing or {}).get('date_source') or '')
+            if old_source.startswith('arxiv') and (not str(date_source or '').startswith('arxiv') or (len(old_date)==10 and len(published or '')<10)):
+                published,date_source=old_date,old_source
             incoming_status = paper.get("retrieval_status", "metadata_only")
             status = self._merged_status(existing, incoming_status)
             missing_reason = paper.get("missing_reason")
@@ -34,13 +42,13 @@ class KBManager:
             parsed_json_path = paper.get("parsed_json_path") or (existing or {}).get("parsed_json_path")
             if existing:
                 self.db.execute(
-                    """UPDATE papers SET title=?, authors_json=?, year=?,
+                    """UPDATE papers SET title=?, authors_json=?, year=?, publication_date=?, date_source=?,
                        venue=?, doi=?, arxiv_id=?, semantic_scholar_id=?,
                        url=?, open_access_pdf_url=?, abstract=?,
                        citation_count=?, retrieval_status=?, missing_reason=?,
                        fulltext_path=?, parsed_markdown_path=?, parsed_json_path=?,
                        updated_at=datetime('now') WHERE id=?""",
-                    (paper.get("title"), authors_json, paper.get("year"),
+                    (paper.get("title"), authors_json, paper.get("year"), published,date_source,
                      paper.get("venue"), paper.get("doi"),
                      paper.get("arxiv_id"), paper.get("semantic_scholar_id"),
                      paper.get("url"), paper.get("open_access_pdf_url"),
@@ -50,14 +58,14 @@ class KBManager:
                 )
             else:
                 self.db.execute(
-                    """INSERT INTO papers (id, title, authors_json, year,
+                    """INSERT INTO papers (id, title, authors_json, year, publication_date, date_source,
                        venue, doi, arxiv_id, semantic_scholar_id, url,
                        open_access_pdf_url, abstract, citation_count,
                        retrieval_status, missing_reason, fulltext_path,
                        parsed_markdown_path, parsed_json_path)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (paper_id, paper.get("title"), authors_json,
-                     paper.get("year"), paper.get("venue"),
+                     paper.get("year"), published,date_source,paper.get("venue"),
                      paper.get("doi"), paper.get("arxiv_id"),
                      paper.get("semantic_scholar_id"), paper.get("url"),
                      paper.get("open_access_pdf_url"), paper.get("abstract"),
@@ -177,20 +185,22 @@ class KBManager:
         hits = paper_hits + profile_hits
         results = []
         seen = set()
+        from src.knowledge.library_organizer import canonical_id
         for h in hits:
-            if h.id in seen:
+            pid = canonical_id(self.db, h.id)
+            if pid in seen:
                 continue
-            seen.add(h.id)
+            seen.add(pid)
             paper = self.db.fetchone(
-                """SELECT id, title, abstract, year, venue, doi, arxiv_id,
+                """SELECT id, title, abstract, year, publication_date, date_source, venue, doi, arxiv_id,
                           semantic_scholar_id, url, open_access_pdf_url,
                           retrieval_status, missing_reason, fulltext_path,
                           parsed_markdown_path
-                   FROM papers WHERE id=?""", (h.id,)
+                   FROM papers WHERE id=?""", (pid,)
             )
             profile = self.db.fetchone(
                 "SELECT profile_json FROM innovation_profiles WHERE paper_id=?",
-                (h.id,)
+                (pid,)
             )
             results.append({
                 "paper": dict(paper) if paper else {},

@@ -63,9 +63,11 @@ def build_app(workspace_root: Path, *, app=None,
         token_parameter=llm_config.get('token_parameter','max_tokens'),
         json_output=llm_config.get('json_output','auto'),
         extra_body_params=llm_config.get('extra_body_params',{}),
+        context_window=llm_config.get('context_window'),
     )
     from src.runtime.research_limits import research_limits
     llm.max_calls = research_limits(config)['max_model_calls']
+    llm.parallel_papers = research_limits(config)['parallel_papers']
 
     from src.knowledge.vector_store import VectorStore, LocalSearchStore
     from src.llm.siliconflow_embedding import siliconflow_embedding_fn
@@ -85,6 +87,8 @@ def build_app(workspace_root: Path, *, app=None,
 
     from src.knowledge.kb_manager import KBManager
     knowledge_base = KBManager(db, vector_store)
+    from src.knowledge.paper_retrieval import PaperRetriever
+    retriever = PaperRetriever(workspace_root)
     if app is None:
         app = FastAPI(title="AI Reader")
     from src.server.websocket import manager
@@ -99,6 +103,7 @@ def build_app(workspace_root: Path, *, app=None,
             await application.state.tasks.close()
             await llm.close()
             if hasattr(vector_store,'close'): vector_store.close()
+            retriever.close()
             db.close()
     app.router.lifespan_context=lifespan
     from src.server.local_security import LocalOnlyMiddleware
@@ -107,6 +112,7 @@ def build_app(workspace_root: Path, *, app=None,
     app.state.llm = llm
     app.state.vs = vector_store
     app.state.kb = knowledge_base
+    app.state.retriever = retriever
     app.state.config = config
     app.state.workspace_root = workspace_root
     app.state.workspace_id = workspace.get_workspace_id()
@@ -122,7 +128,7 @@ def build_app(workspace_root: Path, *, app=None,
 
     from src.agents.orchestrator import Orchestrator
     app.state.orchestrator = Orchestrator(
-        db, llm, vector_store, knowledge_base
+        db, llm, vector_store, knowledge_base, retriever=retriever
     )
 
     static_dir = Path(__file__).resolve().parent.parent / "ui" / "static"
@@ -134,12 +140,14 @@ def build_app(workspace_root: Path, *, app=None,
     from src.server.routes_config import router as config_router
     from src.server.provider_settings import router as settings_router
     from src.server.routes_jobs import router as jobs_router
+    from src.server.routes_library import router as library_router
     from src.server.websocket import router as websocket_router
     app.include_router(chat_router)
     app.include_router(workspace_router)
     app.include_router(config_router)
     app.include_router(settings_router)
     app.include_router(jobs_router)
+    app.include_router(library_router)
     app.include_router(websocket_router)
     @app.get('/api/health')
     async def health():

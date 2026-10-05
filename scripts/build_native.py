@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 import subprocess
-import sys
 import urllib.request
 import zipfile
 import io

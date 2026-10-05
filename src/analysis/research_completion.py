@@ -68,7 +68,7 @@ async def complete_research(owner, ctx, direction, papers, profiles, analysis, p
         existing = {p['id'] for p in papers}
         found = [owner._hydrate_paper_from_db(p.model_dump()) for p in await merge_and_deduplicate(found)]
         found = [p for p in found if p['id'] not in existing]
-        total_new=max(0,min(100,int(limits.get('max_new_papers',30))))
+        total_new=max(0,min(100,int(limits.get('max_new_papers',60))))
         remaining=max(0,total_new-direction.get('search_execution',{}).get('new_papers',0))
         found=found[:remaining]
         if len(found) > new_limit:

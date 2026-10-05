@@ -1,6 +1,5 @@
 import json, logging
 from pathlib import Path
-from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -10,8 +9,8 @@ EXTRACTION_SYSTEM = (
     '不要写泛泛的"提升精度"。只输出合法 JSON。'
 )
 
-EXTRACTION_USER = """论文元数据：{metadata}
-论文内容：{content}
+EXTRACTION_USER = """论文内容：{content}
+论文元数据：{metadata}
 
 请提取以下字段并以 JSON 输出：
 - is_relevant: 是否能从输入中识别论文的研究任务和方法 (bool)；这里未提供会话方向，不得按预设学科排除论文，方向相关性由后续证据审计判断
@@ -40,14 +39,12 @@ class InnovationExtractor:
         self.llm = llm_client
 
     async def extract_from_markdown(self, paper_id: str, metadata: dict,
-                                    markdown_path: Path) -> dict:
-        content = markdown_path.read_text(encoding="utf-8")
+                                    markdown_path: Path, *, content=None) -> dict:
+        content = markdown_path.read_text(encoding="utf-8") if content is None else content
         from src.parsing.content_quality import unusable_fulltext_reason
         reason=unusable_fulltext_reason(content)
         if reason:
             return {'paper_id':paper_id,'is_relevant':False,'confidence':0.0,'error':reason}
-        if len(content) > 60000:
-            content = content[:60000] + "\n...[truncated]"
         messages = [
             {"role": "system", "content": EXTRACTION_SYSTEM},
             {"role": "user", "content": EXTRACTION_USER.format(
@@ -61,6 +58,9 @@ class InnovationExtractor:
             profile['extraction_model'] = getattr(self.llm, 'fast_model', None)
             return profile
         except Exception as e:
+            from src.llm.deepseek_client import LLMStopError
+            if isinstance(e, LLMStopError) or getattr(e, 'status_code', None) in {401, 402, 403}:
+                raise
             logger.error(f"Innovation extraction failed for {paper_id}: {e}")
             return {
                 "paper_id": paper_id, "is_relevant": False,
@@ -86,6 +86,9 @@ class InnovationExtractor:
             profile['extraction_model'] = getattr(self.llm, 'fast_model', None)
             return profile
         except Exception as e:
+            from src.llm.deepseek_client import LLMStopError
+            if isinstance(e, LLMStopError) or getattr(e, 'status_code', None) in {401, 402, 403}:
+                raise
             logger.error(
                 f"Innovation extraction (abstract) failed for {paper_id}: {e}"
             )

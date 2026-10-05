@@ -12,6 +12,11 @@
 .research-think {display:flex;gap:10px;padding:5px 9px;border-radius:5px;background:var(--bg-elevated);color:var(--text-secondary);font-size:12px;min-width:0;}
 .research-think>span:first-child {flex:none;}
 .research-think>span:last-child {white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+.research-call-label {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
+.research-call-preview {flex:1;}
+.research-call-phase {flex:none;}
+.research-draft-label {font-size:11px;color:var(--text-secondary);display:block;margin-top:8px;}
+.research-prose-block:empty,.research-prose-tail:empty {display:none;}
 .research-think.is-active {border-left:2px solid var(--accent-blue);}
 .research-prose {font-size:14px;line-height:1.9;overflow-wrap:anywhere;margin:10px 0 0;}
 .research-prose p {margin:0 0 10px;}

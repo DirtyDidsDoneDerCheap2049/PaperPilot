@@ -13,11 +13,12 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements-lock-windows-py312.txt
       - run: python scripts/build_native.py
+      - run: python scripts/prepare_embedding_model.py
       - run: python -m pytest tests -q --basetemp=work/ci-tests
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node --test tests/test_conversation_ui.cjs
+      - run: node --test tests/test_conversation_ui.cjs tests/test_live_ui.cjs
       - run: python scripts/prepare_release.py --check-only
       # MySQL integration and desktop packaging require the native MySQL SDK.
       # They are verified separately; this hosted job does not claim coverage.

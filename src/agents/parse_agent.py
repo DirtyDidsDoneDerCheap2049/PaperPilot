@@ -1,4 +1,4 @@
-import logging, uuid, asyncio, re
+import logging, uuid, re
 from pathlib import Path
 from src.agents.base import BaseAgent, AgentContext, AgentResult
 from src.parsing.content_quality import unusable_fulltext_reason
@@ -15,25 +15,36 @@ class ParseAgent(BaseAgent):
 
     async def run(self, ctx: AgentContext, input_data: dict) -> AgentResult:
         papers = input_data.get('papers', [])
-        chosen = self._prioritized_papers(papers, input_data.get('deep_parse_top_k', 50), ctx.workspace_root)
+        chosen = self._prioritized_papers(papers, input_data.get('deep_parse_top_k', 60), ctx.workspace_root)
         selected = {p.get('id') for p in chosen}
         data = {'parsed': [], 'metadata_only': [], 'failed': [],
                 'deferred': [p.get('id') for p in papers if p.get('id') not in selected]}
-        for index, paper in enumerate(chosen):
+        from src.runtime.parallel import ordered_map
+        from src.runtime.research_limits import research_limits
+        import httpx
+        completed = 0
+        async def parse_one(paper):
+            nonlocal completed
             detail = {'paper_id': paper.get('id'), 'title': paper.get('title', ''),
-                      'completed': index, 'total': len(chosen)}
+                      'completed': completed, 'total': len(chosen)}
             if self.progress:
                 await self.progress(detail)
-            result = await self._run_batch(ctx, {'papers': [paper], 'deep_parse_top_k': 1})
+            result = await self._run_batch(ctx, {'papers': [paper], 'deep_parse_top_k': 1, 'http_client': client})
+            completed += 1
+            if self.progress:
+                await self.progress(dict(detail, completed=completed))
+            return result
+
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            results = await ordered_map(chosen, parse_one, research_limits(ctx.config)['parallel_downloads'])
+        for result in results:
             for key in ('parsed', 'metadata_only', 'failed'):
                 data[key].extend(result.data.get(key, []))
-            if self.progress:
-                await self.progress(dict(detail, completed=index+1))
         return AgentResult(status='completed', data=data)
 
     async def _run_batch(self, ctx: AgentContext, input_data: dict) -> AgentResult:
         papers = input_data.get("papers", [])
-        top_k = input_data.get("deep_parse_top_k", 10)
+        top_k = input_data.get("deep_parse_top_k", 60)
         ws_root = ctx.workspace_root
         parsed_dir = ws_root / "papers" / "parsed"
         config = ctx.config
@@ -155,7 +166,11 @@ class ParseAgent(BaseAgent):
                     import httpx
                     dl_dir = ws_root / "papers" / "arxiv"
                     dl_dir.mkdir(parents=True, exist_ok=True)
-                    resp = httpx.get(pdf_url, timeout=60, follow_redirects=True)
+                    if input_data.get('http_client'):
+                        resp = await input_data['http_client'].get(pdf_url)
+                    else:
+                        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+                            resp = await client.get(pdf_url)
                     if resp.status_code == 200:
                         pdf_path = dl_dir / f"{safe_id}.pdf"
                         pdf_path.write_bytes(resp.content)

@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 );
 CREATE TABLE IF NOT EXISTS papers (
     id TEXT PRIMARY KEY, title TEXT NOT NULL, authors_json TEXT,
-    year INTEGER, venue TEXT, doi TEXT, arxiv_id TEXT,
+    year INTEGER, publication_date TEXT, date_source TEXT, venue TEXT, doi TEXT, arxiv_id TEXT,
     semantic_scholar_id TEXT, url TEXT, open_access_pdf_url TEXT,
     abstract TEXT, citation_count INTEGER DEFAULT 0,
     retrieval_status TEXT DEFAULT 'metadata_only', missing_reason TEXT,
@@ -67,6 +67,20 @@ CREATE TABLE IF NOT EXISTS gap_analyses (
     search_log_json TEXT, matrix_json TEXT, gaps_json TEXT,
     evidence_json TEXT, report_path TEXT, confidence REAL,
     created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS paper_organization (
+    paper_id TEXT PRIMARY KEY, canonical_id TEXT NOT NULL,
+    category TEXT NOT NULL, tags_json TEXT NOT NULL, summary TEXT, facets_json TEXT,
+    run_id TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS library_organization_runs (
+    id TEXT PRIMARY KEY, state TEXT NOT NULL, input_hash TEXT NOT NULL,
+    plan_json TEXT NOT NULL, before_json TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')), applied_at TEXT, undone_at TEXT
+);
+CREATE TABLE IF NOT EXISTS report_labels (
+    path TEXT PRIMARY KEY, title TEXT NOT NULL, content_sha256 TEXT NOT NULL,
+    named_by TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now'))
 );
 """
 
@@ -101,6 +115,13 @@ class SQLiteStore:
 
     def init_schema(self):
         self.conn.executescript(SCHEMA_SQL)
+        columns={row[1] for row in self.conn.execute('PRAGMA table_info(papers)')}
+        for name in ('publication_date','date_source'):
+            if name not in columns:
+                self.conn.execute(f'ALTER TABLE papers ADD COLUMN {name} TEXT')
+        org_columns={row[1] for row in self.conn.execute('PRAGMA table_info(paper_organization)')}
+        if 'facets_json' not in org_columns:
+            self.conn.execute('ALTER TABLE paper_organization ADD COLUMN facets_json TEXT')
         self.conn.commit()
 
     def execute(self, sql: str, params: tuple = ()):

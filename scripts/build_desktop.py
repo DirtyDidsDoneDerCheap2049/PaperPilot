@@ -9,22 +9,26 @@ ROOT=Path(__file__).resolve().parents[1]
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('--local-workspace',action='store_true',help='Build a private local package pointing to work/runtime/daily')
+    parser.add_argument('--local-workspace',action='store_true',help='Also update dist/PaperPilot.exe using the existing local workspace')
     args=parser.parse_args()
-    dist_dir='dist/current' if args.local_workspace else 'dist/public-desktop'
+    dist_dir='dist/public-desktop'
     if os.name != 'nt':
         raise SystemExit('This release build targets Windows.')
     if not (ROOT/'build/reader_tasks.exe').is_file():
         subprocess.run([sys.executable,str(ROOT/'scripts/build_native.py')],check=True)
+    subprocess.run([sys.executable,str(ROOT/'scripts/prepare_embedding_model.py')],check=True)
     from create_icon import create_icon
     icon=create_icon(ROOT/'build/reader.ico')
-    command=[sys.executable,'-m','PyInstaller','--noconfirm','--onedir','--console','--hide-console','hide-early',
+    command=[sys.executable,'-m','PyInstaller','--noconfirm','--onedir','--windowed',
              '--name','AIReader','--icon',str(icon),'--distpath',str(ROOT/dist_dir),
              '--workpath',str(ROOT/'build/pyinstaller'),'--specpath',str(ROOT/'build'),
              '--paths',str(ROOT),'--add-data',f'{ROOT / "src/ui/static"};src/ui/static',
+             '--add-data',f'{ROOT / "src/knowledge/policies"};src/knowledge/policies',
+             '--add-data',f'{ROOT / "build/models/paper-embedding"};resources/models/paper-embedding',
              '--add-binary',f'{ROOT / "build/reader_tasks.exe"};build',
              '--collect-submodules','src', '--collect-data','webview',
-             '--exclude-module','chromadb','--exclude-module','torch',
+             '--collect-all','chromadb','--collect-all','onnxruntime','--collect-all','tokenizers',
+             '--exclude-module','torch',
              '--exclude-module','sentence_transformers','--exclude-module','pytest',
              '--hidden-import','uvicorn.logging','--hidden-import','uvicorn.loops.auto',
              '--hidden-import','uvicorn.protocols.http.auto','--hidden-import','uvicorn.protocols.websockets.auto',
@@ -36,13 +40,7 @@ def main():
     from importlib.metadata import distributions
     import shutil
     output=ROOT/dist_dir/'AIReader'
-    # Local development delivery only: never bundle research data or this
-    # machine's workspace choice into a public source release.
-    if args.local_workspace and (ROOT/'work/runtime/daily/db/ai_reader.db').is_file():
-        import json
-        (output/'reader-workspace.json').write_text(json.dumps({
-            'workspace': os.path.relpath(ROOT/'work/runtime/daily', output)
-        }), encoding='utf-8')
+    # The public build stays independent of the local workspace selector.
     licenses=output/'THIRD_PARTY_LICENSES'
     shutil.copytree(ROOT/'native/licenses',licenses,dirs_exist_ok=True)
     if (ROOT/'build/licenses').exists():
@@ -57,17 +55,22 @@ def main():
                 if source.is_file():shutil.copy2(source,dest)
     for name in ('LICENSE','README.md','README.en.md','THIRD_PARTY.md'):
         shutil.copy2(ROOT/name,output/name)
-    for name in ('ARCHITECTURE.md','PRODUCT_PURPOSE.md','DOMAIN_PROFILES.md','MYSQL.md','WORKSPACE_GUIDE.md','PUBLISHING.md','RELEASE_NOTES.md','MODEL_OUTPUT.md'):
+    for name in ('INDEX.md','WORKSPACES.md','RELEASE_CHECKS.md','LOCAL_RETRIEVAL_BENCHMARK.md',
+                 'FULLTEXT_RETRIEVAL.md','ARCHITECTURE.md','ADAPTIVE_RESEARCH.md','LIBRARY_ORGANIZATION.md','PRODUCT_PURPOSE.md','DOMAIN_PROFILES.md','MYSQL.md','WORKSPACE_GUIDE.md','PUBLISHING.md','RELEASE_NOTES.md','MODEL_OUTPUT.md','MODEL_COST.md','RUNTIME_PERFORMANCE.md'):
         dest=output/'docs'/name
         dest.parent.mkdir(exist_ok=True)
         shutil.copy2(ROOT/'docs'/name,dest)
+    shutil.copytree(ROOT/'docs/releases',output/'docs/releases',dirs_exist_ok=True)
     shutil.copytree(ROOT/'docs/assets/readme',output/'docs/assets/readme',dirs_exist_ok=True)
-    # A console build preserves redirected worker stdout; this launcher hides
-    # the desktop's console without breaking the JSON Lines worker protocol.
+    # Keep the legacy shortcut compatible. Direct EXE startup is now windowed;
+    # workers explicitly recover inherited pipes instead of requiring a console.
     (output/'Start AI Reader.vbs').write_text(
         'Set s = CreateObject("WScript.Shell")\n'
         'Set f = CreateObject("Scripting.FileSystemObject")\n'
         's.Run Chr(34) & f.BuildPath(f.GetParentFolderName(WScript.ScriptFullName), "AIReader.exe") & Chr(34), 0, False\n',encoding='ascii')
+    if args.local_workspace:
+        from update_local_desktop import update
+        update()
     print(output)
 
 if __name__=='__main__':

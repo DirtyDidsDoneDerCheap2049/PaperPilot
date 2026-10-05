@@ -1,0 +1,16 @@
+[
+  {"key":"temporal","value":"多帧 / 时序","pattern":"多帧|多时间步|(?:视频|时序)立体匹配|multi[- ]?frame|temporal stereo|stereo (?:matching (?:in|for) )?videos?|video stereo|temporally consistent stereo","exclude_title":"\\b(?:dataset|benchmark|generation|synthesis)\\b|数据集|视频生成"},
+  {"key":"temporal","value":"单帧","pattern":"单帧|single[- ]frame|single (?:input )?image","only_if_empty":true},
+  {"key":"prior","value":"单目深度先验","pattern":"单目(?:深度|表面)?先验|monocular(?: depth)? prior|monodepth prior"},
+  {"key":"prior","value":"单目深度先验","pattern":"单目深度基础模型","require_title":"stereo|立体|双目"},
+  {"key":"prior","value":"基础模型先验","pattern":"基础模型|foundation model|pretrained (?:vision|depth) model"},
+  {"key":"prior","value":"几何先验","pattern":"几何先验|geometr(?:ic|y) prior"},
+  {"key":"prior","value":"外部传感器先验","pattern":"lidar|雷达先验|激光雷达|传感器先验"},
+  {"key":"training","value":"半监督","pattern":"半监督|semi[- ]supervised"},
+  {"key":"training","value":"自监督","pattern":"自监督|self[- ]supervised"},
+  {"key":"training","value":"无监督","pattern":"无监督|unsupervised"},
+  {"key":"training","value":"有监督","pattern":"有监督|全监督|fully[- ]supervised|(?<![-\\w])supervised (?:stereo|learning|depth)","exclude":"self[- ]supervised|semi[- ]supervised|unsupervised"},
+  {"key":"mechanism","value":"知识蒸馏","pattern":"蒸馏|distill"},
+  {"key":"mechanism","value":"先验融合","pattern":"先验融合|单目.*融合|stereo[- ]monocular fusion|monocular.*(?:fusion|alignment)"},
+  {"key":"mechanism","value":"跨任务迁移","pattern":"跨任务迁移|cross[- ]task transfer"}
+]

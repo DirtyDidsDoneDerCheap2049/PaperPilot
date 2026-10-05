@@ -1,5 +1,5 @@
 import json, uuid, asyncio, logging
-from fastapi import APIRouter, Request, HTTPException, Query
+from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, Field
 from pathlib import Path
 
@@ -50,7 +50,7 @@ def _latest_session_report_file(db, ws_root: Path, session_id: str) -> Path | No
     row = db.fetchone(
         """SELECT report_path FROM gap_analyses
            WHERE session_id=? AND report_path IS NOT NULL
-           ORDER BY created_at DESC LIMIT 1""",
+           ORDER BY created_at DESC, rowid DESC LIMIT 1""",
         (session_id,),
     )
     if not row or not row.get("report_path"):
@@ -101,22 +101,14 @@ def _safe_workspace_file(ws_root: Path, path_value: str | None) -> Path | None:
     return fp if fp.exists() and fp.is_file() else None
 
 
-def _read_text_excerpt(fp: Path, max_chars: int) -> str:
+def _read_text_excerpt(fp: Path, max_chars: int, query: str = '') -> str:
     try:
+        from src.parsing.document_excerpt import document_excerpt
         if fp.suffix.lower() in {".md", ".txt"}:
-            return fp.read_text(encoding="utf-8", errors="ignore")[:max_chars]
+            return document_excerpt(fp.read_text(encoding="utf-8", errors="replace"),query,max_chars)
         if fp.suffix.lower() == ".pdf":
-            try:
-                import fitz
-            except Exception:
-                return "[PDF 未解析，当前环境无法加载 PyMuPDF 抽取文本]"
-            chunks = []
-            with fitz.open(str(fp)) as doc:
-                for idx, page in enumerate(doc):
-                    if idx >= 8 or sum(len(c) for c in chunks) >= max_chars:
-                        break
-                    chunks.append(page.get_text("text"))
-            return "\n".join(chunks)[:max_chars]
+            from src.parsing.pymupdf_parser import extract_text
+            return document_excerpt(extract_text(fp),query,max_chars)
     except Exception as exc:
         return f"[读取文件失败: {exc}]"
     return ""
@@ -131,7 +123,7 @@ def _decode_authors_json(value: str | None) -> list[str]:
 
 
 def _selected_paper_context(db, ws_root: Path, paper_ids: list[str], max_papers: int = 8,
-                            max_chars: int = 36000) -> str:
+                            max_chars: int = 36000, query: str = '') -> str:
     ids = [pid for pid in dict.fromkeys(paper_ids or []) if isinstance(pid, str) and pid][:max_papers]
     if not ids:
         return ""
@@ -158,10 +150,14 @@ def _selected_paper_context(db, ws_root: Path, paper_ids: list[str], max_papers:
         fulltext_fp = _safe_workspace_file(ws_root, row.get("fulltext_path"))
         if parsed_fp:
             source = str(parsed_fp)
-            text = _read_text_excerpt(parsed_fp, 10000)
+            text = _read_text_excerpt(parsed_fp, 10000, query)
         elif fulltext_fp:
             source = str(fulltext_fp)
-            text = _read_text_excerpt(fulltext_fp, 10000)
+            try:
+                from src.parsing.pymupdf_parser import cached_table_view
+                text = _read_text_excerpt(cached_table_view(fulltext_fp,ws_root),10000,query)
+            except Exception:
+                text = _read_text_excerpt(fulltext_fp,10000,query)
         if source:
             lines.append(f"Local file: {source}")
         lines.append(f"Readable excerpt:\n{text or '[没有可读取的全文片段，当前仅有元数据]'}")
@@ -186,7 +182,10 @@ async def _run_report_chat(req: ChatRequest, request: Request,
     report_file = _safe_report_file(ws_root, req.report_path) if req.report_path else _latest_session_report_file(db, ws_root, session_id)
     report_content = report_file.read_text(encoding="utf-8")[:60000] if report_file else ""
     recent_context = _recent_session_context(db, session_id) if existing else ""
-    paper_context = _selected_paper_context(db, ws_root, req.selected_paper_ids)
+    from src.analysis.session_sources import attachment_paper_ids,research_paper_ids
+    inherited=(attachment_paper_ids(db,session_id,message_id) or research_paper_ids(db,session_id,message_id)) if existing else []
+    context_paper_ids=list(dict.fromkeys(req.selected_paper_ids+inherited))[:8]
+    paper_context = _selected_paper_context(db, ws_root, context_paper_ids,query=req.message+'\n'+recent_context)
     title = f"只对话: {report_file.name}" if report_file else f"只对话: {req.message.strip()}"
     report_path_meta = str(report_file) if report_file else None
     selected_paper_ids = [pid for pid in dict.fromkeys(req.selected_paper_ids or []) if pid]
@@ -201,7 +200,7 @@ async def _run_report_chat(req: ChatRequest, request: Request,
            VALUES (?,?,?,?,?)""",
          (message_id, session_id, "user", req.message,
          json.dumps({"mode": "report_chat", "report_path": report_path_meta,
-                     "selected_paper_ids": selected_paper_ids}, ensure_ascii=False)),
+                     "selected_paper_ids": selected_paper_ids,"context_paper_ids":context_paper_ids}, ensure_ascii=False)),
     )
 
     messages = [
@@ -209,6 +208,9 @@ async def _run_report_chat(req: ChatRequest, request: Request,
             "你是当前研究方向的结果讨论助手。用户正在当前会话里继续对话，不希望生成新报告。"
             "只能基于同一会话历史、已有报告内容（如果提供）、用户选择/上传的论文文件上下文、用户问题和明确标注的不确定性回答；不要启动新检索，不要声称生成了新报告。"
             "如果报告证据不足，要直接指出，并建议用户重新运行分析或补全文。回答使用中文，结论先行。"
+            "论文上下文可来自之前上传的PDF，本次选择栏为空不代表文件不存在。"
+            "可读内容可能是跨全文选择的有限摘录；摘录没出现结果不等于论文没报告，也不能声称已核查整篇全文。"
+            "本地PDF存在但读取失败时说明解析失败，不要求用户重新上传同一个文件；可用研究Agent重新读取。"
             "涉及本工具操作时，只能说明已知入口：输入区 PDF 按钮或论文库上传论文；"
             "只对话模式不检索、不生成报告。不要编造粘贴链接解析、DOI提交或‘无全文继续’等按钮。"
         )},
@@ -250,7 +252,7 @@ async def _run_report_chat(req: ChatRequest, request: Request,
            VALUES (?,?,?,?,?)""",
         (assistant_message_id, session_id, "assistant", answer,
          json.dumps({"mode": "report_chat", "report_path": report_path_meta,
-                     "selected_paper_ids": selected_paper_ids}, ensure_ascii=False)),
+                     "selected_paper_ids": selected_paper_ids,"context_paper_ids":context_paper_ids}, ensure_ascii=False)),
     )
     db.execute("UPDATE sessions SET status='idle', updated_at=datetime('now') WHERE id=?", (session_id,))
     await manager.broadcast(session_id, {

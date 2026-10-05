@@ -1,5 +1,4 @@
-import logging, json, asyncio
-import httpx
+import logging
 
 logger = logging.getLogger(__name__)
 

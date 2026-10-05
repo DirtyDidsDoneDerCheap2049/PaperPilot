@@ -68,6 +68,7 @@ document.addEventListener("DOMContentLoaded", init);
 /* ====== Views ====== */
 function switchView(view) {
   state.activeView = view;
+  closeOverlaySidebar();
   document.querySelectorAll(".view-panel").forEach(p => p.style.display = "none");
   const el = document.getElementById(`view-${view}`);
   if (el) el.style.display = "flex";
@@ -94,7 +95,7 @@ function setupResponsiveLayout() {
   } catch (_) {}
   const apply = () => {
     const compact = window.innerWidth < 1180;
-    const narrow = window.innerWidth < 980;
+    const narrow = window.innerWidth <= 980;
     document.body.classList.toggle("layout-compact", compact);
     if (narrow && state.sidebarVisible && !state.sidebarUserToggled) {
       state.sidebarVisible = false;
@@ -121,7 +122,7 @@ function setupResponsiveLayout() {
   apply();
 }
 function applySidebarVisibility() {
-  const narrow = window.innerWidth < 980;
+  const narrow = window.innerWidth <= 980;
   document.body.classList.toggle("sidebar-collapsed", !state.sidebarVisible && !narrow);
   document.body.classList.toggle("sidebar-open", state.sidebarVisible && narrow);
   const btn = document.getElementById("sidebar-toggle");
@@ -129,6 +130,12 @@ function applySidebarVisibility() {
     btn.classList.toggle("active", state.sidebarVisible);
     btn.title = state.sidebarVisible ? "收起左侧栏" : "展开左侧栏";
   }
+}
+function closeOverlaySidebar() {
+  if (window.innerWidth > 980 || !state.sidebarVisible) return;
+  state.sidebarVisible = false;
+  state.sidebarAutoHidden = true;
+  applySidebarVisibility();
 }
 function toggleSidebar() {
   state.sidebarVisible = !state.sidebarVisible;
@@ -330,8 +337,10 @@ async function handleWSEventAsync(ev) {
       state.running = false;
       updateSendBtn();
       removeRunningCard();
-      state.missingPapers = Array.isArray(ev.missing) ? ev.missing : state.missingPapers;
-      state.evidence = Array.isArray(ev.evidence) ? ev.evidence : state.evidence;
+      if (!ev.revision_only) {
+        state.missingPapers = Array.isArray(ev.missing) ? ev.missing : state.missingPapers;
+        state.evidence = Array.isArray(ev.evidence) ? ev.evidence : state.evidence;
+      }
       state.innovationsExtracted = typeof ev.innovations_extracted === "number" ? ev.innovations_extracted : 0;
       await loadMissingPapers();
       renderEvidenceList();
@@ -349,7 +358,10 @@ async function handleWSEventAsync(ev) {
           missing_count: ev.missing_count,
           gaps_count: ev.gaps_count,
           provisional_gaps_count: ev.provisional_gaps_count,
+          task_type:ev.task_type, answer_status:ev.answer_status, benchmark_verified_count:ev.benchmark_verified_count, answer_count:ev.answer_count,
           summary: ev.report_summary,
+          reading_coverage:ev.reading_coverage, partial_report:ev.partial_report,
+          revision_only:ev.revision_only, source_report_path:ev.source_report_path,
           unprocessed_count: ev.unprocessed_count,
         },
       });
@@ -396,8 +408,9 @@ function addMessage(role, content, extra) {
 }
 
 function isReportContent(content, metadata = {}) {
+  if (metadata?.mode === "report_chat") return false;
   const c = String(content || "");
-  return Boolean(metadata?.report_path || metadata?.report_path_rel) || /证据审计与候选空白报告/.test(c) || /空白创新点分析报告/.test(c) || (/^# .*(?:空白分析报告|研究报告|研究空白核查)/m.test(c) && /AI Reader 自动生成/.test(c));
+  return metadata?.kind === "report" || Boolean(metadata?.report_path || metadata?.report_path_rel) || /证据审计与候选空白报告/.test(c) || /空白创新点分析报告/.test(c) || (/^# .*(?:空白分析报告|研究报告|研究空白核查)/m.test(c) && /AI Reader 自动生成/.test(c));
 }
 
 function htmlToEl(html) {
@@ -409,20 +422,36 @@ function htmlToEl(html) {
 function reportCardHTML(meta) {
   const m = meta || {};
   const path = m.path || "";
+  if (m.revision_only) return `<div class="report-card"><h3>报告已修改</h3>
+    <p class="rc-status">基于已有报告和保存的分析修改 · 没有重新检索或阅读论文 · 原报告保留</p>
+    ${m.summary?`<div class="rc-conclusion">${safeMarkdown(m.summary)}</div>`:''}
+    <div class="rc-actions"><button class="rc-btn" onclick="openReport('${esc(path)}')">查看修改后的报告</button>
+    <button class="rc-btn" onclick="startReportChatForReport('${esc(path)}')">继续讨论或修改</button>
+    <button class="rc-btn" onclick="exportGptHandoff('${esc(path)}')">导出研究资料包</button></div></div>`;
   const noInnov = typeof m.innovations_extracted === "number" && m.innovations_extracted === 0;
   const gapsText = noInnov ? "证据不足" : (typeof m.gaps_count === "number" ? m.gaps_count : "?");
   const num = (v) => (typeof v === "number" ? v : "?");
-  const openBtn = path ? `<button class="rc-btn" onclick="openReport('${esc(path)}')">查看完整报告</button>` : "";
-  const chatBtn = path ? `<button class="rc-btn" onclick="startReportChatForReport('${esc(path)}')">继续追问，不生成报告</button>` : "";
-  const warnHtml = noInnov ? `<div class="rc-warn">没有取得可用于分析的论文证据，本轮无法判断研究空白。</div>` : "";
+  const task=m.task_type||'gap_discovery';
+  const resultCounts=task==='gap_discovery'?`<div>研究候选: <strong>${gapsText}</strong></div><div>待核实假设: <strong>${num(m.provisional_gaps_count)}</strong></div>`:
+    task==='benchmark_comparison'?`<div>已核实数值: <strong>${num(m.benchmark_verified_count)}</strong></div>`:
+    `<div>有证据的回答: <strong>${num(m.answer_count)}</strong></div>`;
+  const openBtn = path ? `<button class="rc-btn" onclick="openReport('${esc(path)}')">${m.partial_report?'查看部分报告':'查看完整报告'}</button>` : "";
+  const chatBtn = path ? `<button class="rc-btn" onclick="startReportChatForReport('${esc(path)}')">继续讨论或修改</button>` : "";
+  const warnHtml = noInnov ? `<div class="rc-warn">没有取得可用于回答当前问题的论文证据。</div>` : "";
+  const answerStatus=m.partial_report?'<p class="rc-status partial">部分结果 · 完整初稿未通过检查，已整理可核实的结果和未完成项。</p>':
+    m.answer_status==='partial'?'<p class="rc-status partial">部分结果 · 仍有问题尚未核实，详见结论与完整报告。</p>':
+    m.answer_status==='unresolved'?'<p class="rc-status partial">尚未取得可核实答案，详见完整报告中的证据缺口。</p>':'';
+  const coverage=m.reading_coverage;
+  const coverageHtml=coverage?`<p class="rc-status">完成证据提取 ${esc(String(coverage.completed??0))}／${esc(String(coverage.admitted??0))} 篇 · 本轮处理上限 ${esc(String(coverage.read_limit??60))} 篇</p>`:'';
   return `<div class="report-card">
     <h3>本轮研究结果</h3>
+    ${answerStatus}
+    ${coverageHtml}
     ${m.summary?`<div class="rc-conclusion">${safeMarkdown(m.summary)}</div>`:''}
     <div class="rc-grid">
       <div>纳入资料: <strong>${num(m.papers_found)}</strong></div>
       <div>已提取证据: <strong>${num(m.innovations_extracted)}</strong></div>
-      <div>研究候选: <strong>${gapsText}</strong></div>
-      <div>待核实假设: <strong>${num(m.provisional_gaps_count)}</strong></div>
+      ${resultCounts}
       <div>缺全文: <strong>${num(m.missing_count)}</strong></div>
       ${typeof m.unprocessed_count==='number'?`<div>尚未完成分析: <strong>${m.unprocessed_count}</strong></div>`:''}
     </div>
@@ -482,7 +511,7 @@ function renderMessages(forceBottom = false) {
   state.messages.forEach((m, index) => {
     let storedMetadata = {};
     try { storedMetadata = typeof m.metadata_json === 'string' ? JSON.parse(m.metadata_json) : (m.metadata_json || {}); } catch (_) {}
-    const isReport = m.kind === "report" || (m.role === "assistant" && isReportContent(m.content, storedMetadata));
+    const isReport = storedMetadata.mode !== "report_chat" && (m.kind === "report" || (m.role === "assistant" && isReportContent(m.content, storedMetadata)));
     if (isReport) {
       const meta = m.report || {};
       el.appendChild(htmlToEl((meta && meta.path) ? reportCardHTML(meta) : legacyReportCardHTML(m.content, index)));
@@ -602,9 +631,6 @@ async function sendMessage() {
   const input = document.getElementById("user-input");
   const msg = input.value.trim();
   if (!msg || state.running || state.sending || state.loadingSession) return;
-  if(state.chatMode==='report_chat' && state.selectedPaperIds.size>8){
-    toast('讨论结果最多附带 8 篇片段；核查研究方向或补检索请切换「研究 Agent」。','warning');return;
-  }
   state.sending = true; updateSendBtn();
   try {
     const cfg = await (await fetch('/api/settings')).json();
@@ -634,7 +660,7 @@ async function sendMessage() {
     rememberSession(state.currentSessionId);
   }
   updateSendBtn();
-  showRunningCard(reportChat ? "正在基于当前会话上下文回答" : msg, reportChat ? "只对话，不生成报告" : "正在分析你的研究方向");
+  showRunningCard(reportChat ? "正在基于当前会话上下文回答" : msg, reportChat ? "讨论当前结果" : "正在分析你的研究方向");
 
   try {
     const selectedIds = [...state.selectedPaperIds];
@@ -650,7 +676,12 @@ async function sendMessage() {
     }
     const data = await resp.json();
     if (data.message_id) userMsg.id = data.message_id;
-    if (data.job_id && !reportChat && typeof attachResearchChat === 'function') {
+    state.chatMode = data.mode === 'report_chat' ? 'report_chat' : 'analysis';
+    updateChatModeButton();
+    if (data.mode === 'report_revision') {
+      showRunningCard(msg, '仅修改报告，不重新阅读论文');
+    }
+    if (data.job_id && data.mode !== 'report_chat' && typeof attachResearchChat === 'function') {
       await attachResearchChat(state.currentSessionId, data.job_id);
     }
     if (data.mode === "report_chat") {
@@ -738,7 +769,7 @@ function endStreaming(meta) {
   state.streaming = false;
   state.streamingContent = "";
   if (state.streamingEl) { state.streamingEl.remove(); state.streamingEl = null; }
-  state.messages.push({ id: meta.id, role: "assistant", content: meta.content });
+  state.messages.push({ id: meta.id, role: "assistant", content: meta.content, metadata_json: JSON.stringify({ mode: "report_chat" }) });
   renderMessages();
 }
 function cancelStreaming() {
@@ -947,7 +978,7 @@ async function loadSession(sid) {
       let kind, report;
       try {
         const meta = m.metadata_json ? JSON.parse(m.metadata_json) : null;
-        if (meta && meta.kind === "report") {
+        if (meta && meta.kind === "report" && meta.mode !== "report_chat") {
           kind = "report";
           report = {
             path: meta.report_path || "",
@@ -956,7 +987,10 @@ async function loadSession(sid) {
             missing_count: meta.missing_count,
             gaps_count: meta.gaps_count,
             provisional_gaps_count: meta.provisional_gaps_count,
+            task_type:meta.task_type, answer_status:meta.answer_status, benchmark_verified_count:meta.benchmark_verified_count, answer_count:meta.answer_count,
             summary: meta.report_summary,
+            reading_coverage:meta.reading_coverage, partial_report:meta.partial_report,
+            revision_only:meta.revision_only, source_report_path:meta.source_report_path,
             unprocessed_count: meta.unprocessed_count,
           };
         }
@@ -1100,7 +1134,7 @@ function renderLibraryTable() {
   const papers = state.papers || [];
   papers.forEach(p => { if (state.selectedPaperIds.has(p.id)) state.selectedPapersById.set(p.id, p); });
   const paperCountEl = document.getElementById("folder-papers-count");
-  if (paperCountEl) paperCountEl.textContent = papers.length;
+  if (paperCountEl) paperCountEl.textContent = state.libraryItemCount ?? state.libraryTotal ?? papers.length;
   tb.innerHTML = papers.length ? papers.map(p=>paperRowHTML(p)).join("") : `<tr><td colspan="8" class="lib-empty"><div class="library-empty-state">${readerIcon('book')}<h2>${document.getElementById('library-search').value.trim()?'没有匹配的论文':'把第一篇论文放进来'}</h2><p>导入手头的 PDF，或从研究问题开始检索。<br>本地解析适用于可选中文字的 PDF；扫描件可能需要额外解析服务。</p><div class="welcome-actions"><button class="welcome-primary" onclick="uploadPaper()">导入 PDF</button><button class="welcome-secondary" onclick="switchView('chat');document.getElementById('user-input').focus()">从问题开始</button></div></div></td></tr>`;
   tb.querySelectorAll(".paper-row[data-paper-id]").forEach(row => row.addEventListener("click", (e) => {
     if (shouldIgnoreOpenClick(e)) return;
@@ -1125,11 +1159,12 @@ function paperRowHTML(p) {
   const st = paperStatus(p);
   const authors = (p.authors || []).slice(0,3).join(", ") || "-";
   const venue = [p.venue, p.year].filter(Boolean).join(" / ") || "-";
-  const added = (p.updated_at || p.created_at || "").slice(0,10) || "-";
+  const added = formatConversationTime(p.updated_at || p.created_at || "").slice(0,10) || "-";
   const title = p.title || p.id || "Untitled";
   const checked = state.selectedPaperIds.has(p.id) ? " checked" : "";
   const selected = state.selectedPaperIds.has(p.id) ? " selected" : "";
-  return `<tr class="paper-row${selected}" data-paper-id="${esc(p.id)}"><td><input class="paper-select" type=checkbox data-paper-id="${esc(p.id)}"${checked}></td><td><div class="thumb-cell ${p.kind === 'prior_knowledge' ? 'prior' : ''}"></div></td><td><div class="paper-title">${esc(title)}</div><div class="paper-subtitle">${esc(p.id || '')}</div></td><td>${esc(authors)}</td><td>${esc(venue)}</td><td><span class="status-badge ${st.cls}">${st.text}</span></td><td>${esc(added)}</td><td class="lib-row-actions"><button class="paper-open-btn" data-paper-id="${esc(p.id)}">查看</button></td></tr>`;
+  const organized = typeof paperOrganizationHTML==='function' ? paperOrganizationHTML(p) : '';
+  return `<tr class="paper-row${selected}" data-paper-id="${esc(p.id)}"><td><input class="paper-select" type=checkbox data-paper-id="${esc(p.id)}"${checked}></td><td><div class="thumb-cell ${p.kind === 'prior_knowledge' ? 'prior' : ''}"></div></td><td><div class="paper-title">${esc(title)}</div>${organized}<div class="paper-subtitle">${esc(p.id || '')}</div></td><td>${esc(authors)}</td><td>${esc(venue)}</td><td><span class="status-badge ${st.cls}">${st.text}</span></td><td>${esc(added)}</td><td class="lib-row-actions"><button class="paper-open-btn" data-paper-id="${esc(p.id)}">查看</button></td></tr>`;
 }
 
 function selectedPapers() {
@@ -1162,8 +1197,8 @@ function updateLibrarySelectionUI() {
   if (input) {
     input.placeholder = state.chatMode === "report_chat"
       ? selected.length
-        ? `只对话模式：将发送 ${selected.length} 篇论文/PDF作为上下文，不生成新报告...`
-        : "只对话模式：基于当前会话历史和最近报告回答，不生成新报告..."
+        ? `讨论结果：将使用 ${selected.length} 篇论文/PDF作为上下文；也可以直接要求修改现有报告...`
+        : "讨论结果：基于当前会话和报告回答；要求润色报告时自动保存修订版..."
       : selected.length
       ? `已选 ${selected.length} 篇论文作为上下文。直接输入你的原问题...`
       : "在这里输入你的研究问题...";
@@ -1261,14 +1296,24 @@ async function markSelectedOffTopic() {
     toast(String(e), "error");
   }
 }
-async function loadPapers() {
+async function loadPapers(resetPage=true) {
   try {
+    if(resetPage)state.libraryOffset=0;
+    const offset=state.libraryOffset||0;
     const input = document.getElementById("library-search");
     const q = input ? input.value.trim() : "";
-    const r = await fetch(`/api/papers?limit=500&q=${encodeURIComponent(q)}`);
+    const category=state.libraryCategory||'';
+    const duplicates=Boolean(document.getElementById('library-show-duplicates')?.checked);
+    const requestId=state.libraryRequestId=(state.libraryRequestId||0)+1;
+    const facetQuery=new URLSearchParams(state.libraryFacets||{}).toString();
+    const r = await fetch(`/api/papers?limit=100&offset=${offset}&q=${encodeURIComponent(q)}&category=${encodeURIComponent(category)}&include_duplicates=${duplicates}&${facetQuery}`);
+    if(!r.ok)throw new Error('论文库加载失败');
     const d = await r.json();
+    if(requestId!==state.libraryRequestId)return;
     state.papers = d.papers || [];
+    state.libraryTotal=d.total??state.papers.length;
     renderLibraryTable();
+    if(typeof updateLibraryPagination==='function')updateLibraryPagination();
   } catch (e) { toast("论文库加载失败", "error"); }
 }
 async function openPaperDetail(id) {
@@ -1284,12 +1329,13 @@ async function openPaperDetail(id) {
     const missingActions = (p.retrieval_status === "missing_fulltext" || p.retrieval_status === "metadata_only") ? `<div class="paper-detail-actions"><button class="lib-btn" onclick="uploadMissingFulltext('${esc(p.id)}')">上传 PDF</button><button class="lib-btn" onclick="markMissingPaperNotFound('${esc(p.id)}')">我也没找到</button></div>` : "";
     const profile = d.profile && Object.keys(d.profile).length ? `<h3>创新画像</h3><p>${esc(d.profile.innovation_detail || d.profile.method_subcategory || "已提取，但没有摘要字段。")}</p>` : "";
     const preview = d.preview_markdown ? `<h3>全文预览</h3><div class="paper-md-preview">${safeMarkdown(d.preview_markdown.slice(0,12000))}</div>` : "";
+    const organization=typeof libraryDetailHTML==='function'?libraryDetailHTML(d):'';
     openDocumentReader({
       title: p.title || p.id || "论文详情",
       path: p.id || id,
       kind: "paper",
       sourceView: "library",
-      html: `<div class="paper-detail"><h2>${esc(p.title || p.id || "Untitled")}</h2><div class="paper-meta-line">${esc(authors)}</div><div class="paper-meta-line">${esc([p.venue,p.year].filter(Boolean).join(" / ") || "-")} · <span class="status-badge ${st.cls}">${st.text}</span></div>${fulltext}${links?`<div class="paper-links">${links}</div>`:""}${missingActions}<h3>摘要</h3><p>${esc(p.abstract || "暂无摘要。")}</p>${profile}${preview}</div>`,
+      html: `<div class="paper-detail"><h2>${esc(p.title || p.id || "Untitled")}</h2><div class="paper-meta-line">${esc(authors)}</div><div class="paper-meta-line">${esc([p.venue,p.year].filter(Boolean).join(" / ") || "-")} · <span class="status-badge ${st.cls}">${st.text}</span></div>${organization}${fulltext}${links?`<div class="paper-links">${links}</div>`:""}${missingActions}<h3>摘要</h3><p>${esc(p.abstract || "暂无摘要。")}</p>${profile}${preview}</div>`,
     });
   } catch (e) { toast(String(e), "error"); }
 }
@@ -1378,23 +1424,27 @@ async function refreshReportList() {
   const el = document.getElementById("report-list");
   if (!el) return;
   try {
-    const r = await fetch("/api/workspace/tree");
+    const r = await fetch("/api/reports");
     const d = await r.json();
-    const reps = (d.items || []).filter(i => i.path.startsWith("reports/") && i.type === "file" && i.path.endsWith(".md"));
+    if(!r.ok)throw new Error('无法读取报告名称');
+    const reps=d.reports||[];
+    state.reportLabels=Object.fromEntries(reps.map(rp=>[rp.path,rp.title]));
     document.getElementById("reports-count").textContent = reps.length;
     el.innerHTML = reps.map(rp => {
-      const parsed = parseReportFileName(rp.path.replace("reports/", ""));
-      return `<div class="report-item" onclick="if(!shouldIgnoreOpenClick(event)) openReport('${esc(rp.path)}')">
+      return `<div class="report-item" data-open-report="${esc(rp.path)}">
         <div class="ri-left">
-          <span class="ri-name" title="${esc(rp.path)}">${esc(parsed.title)}</span>
-          <span class="ri-date">${esc(parsed.date)}</span>
+          <span class="ri-name" title="${esc(rp.path)}">${esc(rp.title)}</span>
+          <span class="ri-date">${esc(rp.date)} · ${esc(rp.kind)}</span>
         </div>
         <span class="report-actions" onclick="event.stopPropagation()">
-          <button class="report-action-btn" onclick="renameReport('${esc(rp.path)}')">重命名</button>
-          <button class="report-action-btn danger" onclick="deleteReport('${esc(rp.path)}')">删除</button>
+          <button class="report-action-btn" data-title-report="${esc(rp.path)}">改名称</button>
+          <button class="report-action-btn danger" data-delete-report="${esc(rp.path)}">删除</button>
         </span>
       </div>`;
     }).join("") || '<div class="lib-empty">暂无报告。</div>';
+    el.querySelectorAll('[data-open-report]').forEach(row=>row.onclick=e=>{if(!shouldIgnoreOpenClick(e))openReport(row.dataset.openReport);});
+    el.querySelectorAll('[data-title-report]').forEach(b=>b.onclick=e=>{e.stopPropagation();renameReport(b.dataset.titleReport);});
+    el.querySelectorAll('[data-delete-report]').forEach(b=>b.onclick=e=>{e.stopPropagation();deleteReport(b.dataset.deleteReport);});
   } catch(e) {
     toast("报告列表加载失败", "error");
   }
@@ -1405,7 +1455,7 @@ async function openReport(path) {
     state.currentReport = { path, content: d.content || "" };
     document.getElementById("report-list").style.display="none";
     document.getElementById("report-reader").style.display="flex";
-    document.getElementById("rr-title").textContent="研究报告";
+    document.getElementById("rr-title").textContent=state.reportLabels?.[path]||(d.content||'').match(/^#\s+(.+)$/m)?.[1]||'研究报告';
     const bodyEl = document.getElementById("rr-body");
     bodyEl.innerHTML = typeof reportReadingHTML === "function" ? reportReadingHTML(d.content||"") : safeMarkdown(d.content||"");
     bodyEl.scrollTop = 0;
@@ -1535,7 +1585,7 @@ function toggleContextChatMode() {
     state.chatMode = "report_chat";
     state.reportChatPath = null;
     updateLibrarySelectionUI();
-    toast("已切换为只对话模式：保留当前上下文，不生成新报告", "");
+    toast("已切换为结果讨论：保留当前上下文，也可直接要求修改报告", "");
   }
 }
 function exitReportChat() {
@@ -1545,7 +1595,7 @@ function exitReportChatMode(silent) {
   state.chatMode = "analysis";
   state.reportChatPath = null;
   updateLibrarySelectionUI();
-  if (!silent) toast("已退出只对话模式", "");
+  if (!silent) toast("已切回研究 Agent，将接续本会话和已有论文，可补检索并生成报告", "");
 }
 function updateChatModeButton() {
   const btn = document.getElementById("chat-mode-btn");
@@ -1555,7 +1605,7 @@ function updateChatModeButton() {
   btn.classList.toggle("active", contextOnly);
   btn.title = contextOnly
     ? "讨论已有结果，不补检索或重新分析论文。点击切回研究 Agent。"
-    : "检索已有实现，核查覆盖与反证，审查候选研究空白。点击切到讨论结果。";
+    : "接续本会话和已用论文，可补检索、核对证据并生成报告。新方向可点击新研究。点击切到讨论已有结果。";
   updateConversationChrome();
 }
 
@@ -1635,14 +1685,14 @@ async function deleteOpenReport() {
   await deleteReport(state.currentReport.path);
 }
 async function renameReport(path) {
-  const current = reportBaseName(path);
-  const next = prompt("新的报告文件名:", current);
+  const current = state.reportLabels?.[path]||reportBaseName(path);
+  const next = prompt("新的中文报告名称（不修改原文或文件路径）:", current);
   if (!next || next.trim() === current) return;
   try {
-    const resp = await fetch("/api/reports/rename", {
+    const resp = await fetch("/api/reports/title", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path, new_name: next.trim() }),
+      body: JSON.stringify({ path, title: next.trim() }),
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
@@ -1652,7 +1702,7 @@ async function renameReport(path) {
     if (state.currentReport && state.currentReport.path === path) {
       state.currentReport.path = data.path;
       const title = document.getElementById("rr-title");
-      if (title) title.textContent = reportBaseName(data.path);
+      if (title) title.textContent = data.title;
     }
     if (state.reportChatPath === path) state.reportChatPath = data.path;
     await refreshReportList();
@@ -1727,27 +1777,56 @@ function expandReportIdea() {
 function missingPaperId(m) { return m.id || m.paper_id || ""; }
 function missingReasonText(reason) {
   if (reason === "user_not_found") return "已记录：你也没找到公开全文";
-  if (reason === "no_open_fulltext") return "未发现可公开下载全文";
-  if (/^[A-Za-z0-9_-]+$/.test(reason||'')) return '尚无可用全文；历史分类备注需重新核查';
-  return reason || "需要手动补全文";
+  if (reason === "no_open_fulltext" || reason === "no_pdf_available") return "此前未自动获取全文，可打开来源页查找";
+  if ((reason||'').startsWith('awesome_')) return '仅导入了题录，未记录全文获取尝试';
+  if (/^[A-Za-z0-9_-]+$/.test(reason||'')) return '当前没有可用本地全文';
+  return reason || "当前仅有题录或摘要";
+}
+async function autoNameReports(){
+  const modal=desktopModal('模型命名报告','<p class="desktop-lead">为现有报告生成简短中文名称，按主题和用途区分。</p><p>会向当前模型发送尚未由模型命名的报告标题、研究问题和开头片段，产生 API 费用；已命名的报告会复用。原文和文件路径保持不变。</p><div class="desktop-action-row"><button class="settings-save" id="report-name-start">开始命名</button></div><p id="report-name-message" role="status"></p>');
+  modal.querySelector('#report-name-start').onclick=async function(){
+    this.disabled=true;const message=modal.querySelector('#report-name-message');message.textContent='正在生成名称…';
+    try{const r=await fetch('/api/reports/auto-name',{method:'POST'});const d=await r.json();if(!r.ok)throw new Error(d.detail||'命名失败');await refreshReportList();modal.remove();toast(d.named?`已命名 ${d.named} 份报告`:'已有名称无需重复调用模型','');}
+    catch(e){message.textContent=e.message;this.disabled=false;}
+  };
+}
+function paperAccessLinkHTML(link){
+  try{const url=new URL(link.url);if(!['https:','http:'].includes(url.protocol)||url.username||url.password)return '';}
+  catch(_){return '';}
+  return `<a class="paper-access-link" href="${esc(link.url)}" target="_blank" rel="noopener noreferrer">${esc(link.label)}</a>`;
+}
+function missingSourceLinksHTML(m){
+  const links=Array.isArray(m.source_links)?m.source_links:[];
+  const direct=links.filter(l=>l.kind!=='search'),search=links.filter(l=>l.kind==='search');
+  return `<div class="paper-access-links">${direct.length?direct.slice(0,4).map(paperAccessLinkHTML).join(''):'<span class="missing-reason">暂无已记录原文页</span>'}${search.slice(0,2).map(paperAccessLinkHTML).join('')}</div>${search.length>2||direct.length>4?`<details class="paper-access-more"><summary>更多检索途径</summary><div class="paper-access-links">${[...direct.slice(4),...search.slice(2)].map(paperAccessLinkHTML).join('')}</div></details>`:''}`;
 }
 function missingActionsHTML(m) {
   const id = missingPaperId(m);
   if (!id) return `<span class="missing-reason">缺少 paper_id</span>`;
   const reason = m.missing_reason || "";
-  return `<div class="missing-actions"><button class="lib-btn" data-copy="${esc(m.title || '')}" onclick="copyText(this.dataset.copy, '已复制论文标题')">复制标题</button><button class="lib-btn" onclick="uploadMissingFulltext('${esc(id)}')">上传 PDF</button><button class="lib-btn" onclick="markMissingPaperNotFound('${esc(id)}')" ${reason === "user_not_found" ? "disabled" : ""}>我也没找到</button></div>`;
+  return `${missingSourceLinksHTML(m)}<div class="missing-actions"><button class="lib-btn" data-copy="${esc(m.title || '')}" onclick="copyText(this.dataset.copy, '已复制论文标题')">复制标题</button><button class="lib-btn" onclick="uploadMissingFulltext('${esc(id)}')">上传 PDF</button><button class="lib-btn" onclick="markMissingPaperNotFound('${esc(id)}')" ${reason === "user_not_found" ? "disabled" : ""}>我也没找到</button></div>`;
 }
-async function loadMissingPapers() {
+function changeMissingPage(direction){state.missingOffset=Math.max(0,(state.missingOffset||0)+direction*100);loadMissingPapers(false);}
+async function loadMissingPapers(resetPage=true) {
+  if(resetPage)state.missingOffset=0;
   state.missingLoadError='';
   const loadId=state.missingLoadId=(state.missingLoadId||0)+1;
-  const scope=document.getElementById('missing-scope')?.value;
+  const selector=document.getElementById('missing-scope');
+  let scope=selector?.value||'research';
+  if(selector){const option=selector.querySelector('option[value="session"]');if(option)option.disabled=!state.currentSessionId;}
+  if(scope==='session'&&!state.currentSessionId){scope='research';if(selector)selector.value=scope;}
   const session=scope==='session'?state.currentSessionId:null;
+  const params=new URLSearchParams({scope,limit:'100',offset:String(state.missingOffset||0)});
+  if(session)params.set('session_id',session);
+  const query=document.getElementById('missing-search')?.value?.trim();if(query)params.set('q',query);
   try {
-    const r = await fetch('/api/missing-papers'+(session?'?session_id='+encodeURIComponent(session):''));
+    const r = await fetch('/api/missing-papers?'+params);
     if (!r.ok) throw new Error("缺全文列表加载失败");
     const d = await r.json();
     if(loadId!==state.missingLoadId)return;
     state.missingPapers = d.papers || [];
+    state.missingSummary=d.summary||{};state.missingTotal=d.total??state.missingPapers.length;
+    state.missingScope=d.scope;
     updateMissingBadges();
     renderMissingView();
     renderMissingList();
@@ -1763,12 +1842,18 @@ function renderMissingView() {
   const tb = document.getElementById("missing-table-body");
   if (!tb) return;
   if(state.missingLoadError){tb.innerHTML='<tr><td colspan="4">'+esc(state.missingLoadError)+' <button class="rc-btn" onclick="loadMissingPapers()">重新加载</button></td></tr>';return;}
-  tb.innerHTML = state.missingPapers.length ? state.missingPapers.map(m => `<tr><td><div class="paper-title selectable-text">${esc(m.title||'')}</div><div class="paper-subtitle selectable-text">${esc(missingPaperId(m))}</div></td><td class="selectable-text">${esc([m.venue,m.year].filter(Boolean).join(' / ') || '-')}</td><td><span class="missing-reason selectable-text">${esc(missingReasonText(m.missing_reason))}</span></td><td>${missingActionsHTML(m)}</td></tr>`).join("") : '<tr><td colspan="4" class="lib-empty">暂无缺全文论文。</td></tr>';
+  const summary=state.missingSummary||{},overview=document.getElementById('missing-overview');
+  if(overview)overview.textContent=`当前范围 ${state.missingTotal||0} 篇 · 现有研究相关 ${summary.research_total||0} 篇 · 仅入库 ${summary.library_only_total||0} 篇${summary.folded_records?` · 已折叠 ${summary.folded_records} 条重复来源`:''}`;
+  const guide=document.getElementById('missing-database-links');
+  if(guide)guide.innerHTML=[['CVF 会议公开库','https://openaccess.thecvf.com/'],['IEEE Xplore','https://ieeexplore.ieee.org/'],['ACM Digital Library','https://dl.acm.org/'],['ScienceDirect','https://www.sciencedirect.com/'],['Springer Nature Link','https://link.springer.com/'],['arXiv','https://arxiv.org/']].map(([label,url])=>paperAccessLinkHTML({label,url})).join('');
+  tb.innerHTML = state.missingPapers.length ? state.missingPapers.map(m => `<tr><td><div class="paper-title selectable-text">${esc(m.title||'')}</div><div class="paper-subtitle selectable-text">${esc(m.category||'')}${m.duplicate_count?` · ${m.duplicate_count+1} 条来源`:''}</div><div class="paper-subtitle selectable-text">${esc(missingPaperId(m))}</div></td><td class="selectable-text">${esc([m.venue,m.year].filter(Boolean).join(' / ') || '-')}</td><td><span class="missing-usage">${esc(m.usage_label||'')}</span><p class="missing-reason selectable-text">${esc(m.access_status||missingReasonText(m.missing_reason))}</p></td><td>${missingActionsHTML(m)}</td></tr>`).join("") : '<tr><td colspan="4" class="lib-empty">当前范围没有待补全文论文。可以切换到整个论文库查看其他题录。</td></tr>';
+  const pagination=document.getElementById('missing-pagination');
+  if(pagination){const offset=state.missingOffset||0,total=state.missingTotal||0;pagination.hidden=total<=100;document.getElementById('missing-page-info').textContent=`${total?offset+1:0}–${Math.min(offset+100,total)} / ${total} 篇`;document.getElementById('missing-previous').disabled=!offset;document.getElementById('missing-next').disabled=offset+100>=total;}
 }
 function renderMissingList() {
   const el = document.getElementById("ins-missing-list");
   if (!el) return;
-  el.innerHTML = state.missingPapers.length ? state.missingPapers.map(m => `<div class="missing-item"><div class="selectable-text"><strong>${esc(m.title||'')}</strong></div><div class="selectable-text" style="color:var(--text-muted);">${esc([m.venue,m.year].filter(Boolean).join(' / ') || '-')}</div><div class="mi-action selectable-text">${esc(missingReasonText(m.missing_reason))}</div>${missingActionsHTML(m)}</div>`).join("") : '<div class="ins-empty">暂无缺全文论文。</div>';
+  el.innerHTML = state.missingPapers.length ? state.missingPapers.map(m => `<div class="missing-item"><div class="selectable-text"><strong>${esc(m.title||'')}</strong></div><div class="selectable-text" style="color:var(--text-muted);">${esc([m.venue,m.year].filter(Boolean).join(' / ') || '-')}</div><div class="mi-action selectable-text">${esc(m.usage_label||'')} · ${esc(m.access_status||missingReasonText(m.missing_reason))}</div>${missingActionsHTML(m)}</div>`).join("") : '<div class="ins-empty">当前范围暂无待补全文论文。</div>';
 }
 async function uploadMissingFulltext(paperId) {
   if (!paperId) return;
@@ -1843,7 +1928,7 @@ function renderEvidenceList() {
     </div>`;
   }).join("");
 }
-function updateMissingBadges() { const count=state.missingPapers.length; const badge=document.getElementById("missing-badge"); const ws=document.getElementById("ws-missing-count"); if(badge){badge.textContent=count; badge.style.display=count?"flex":"none";} if(ws) ws.textContent=count; }
+function updateMissingBadges() { const count=state.missingSummary?.research_total??state.missingPapers.length; const badge=document.getElementById("missing-badge"); const ws=document.getElementById("ws-missing-count"); if(badge){badge.textContent=count; badge.style.display=count?"flex":"none";} if(ws) ws.textContent=count; }
 
 async function copyText(text, message) {
   if (!text) return toast("没有可复制内容", "warning");
@@ -1951,7 +2036,7 @@ async function showSettings() {
         <div class="settings-group-title">检索</div>
         <label class="settings-field"><span>搜索轮数</span><input id="set-search-rounds" type="number" min="1" value="${esc(String(cfg.search?.max_rounds ?? 3))}"></label>
         <label class="settings-field"><span>每轮 Top K</span><input id="set-search-topk" type="number" min="1" value="${esc(String(cfg.search?.top_k_per_round ?? 20))}"></label>
-        <label class="settings-field"><span>深度解析篇数</span><input id="set-search-deepparse" type="number" min="0" value="${esc(String(cfg.search?.deep_parse_top_k ?? 10))}"></label>
+        <label class="settings-field"><span>本轮论文处理上限</span><input id="set-search-deepparse" type="number" min="0" max="100" value="${esc(String(cfg.search?.deep_parse_top_k ?? 60))}"></label>
         <div class="settings-note">Embedding：${esc(cfg.embedding?.provider || "")} / ${esc(cfg.embedding?.model || "")}（改动后需重启生效）</div>
         <div class="settings-note">API Key 会写入 .env，其余选项写入 config.yaml（首次保存会留一份 .bak 备份）。</div>
       </div>

@@ -1,6 +1,6 @@
 """Chatbox-style built-in tools: arXiv search, Fetch, Sequential Thinking."""
 
-import json, logging
+import logging
 import httpx
 
 logger = logging.getLogger(__name__)

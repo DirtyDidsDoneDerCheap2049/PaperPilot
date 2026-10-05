@@ -1,6 +1,6 @@
 """Paper-Notes static site exporter."""
 
-import json, logging
+import logging
 from pathlib import Path
 from datetime import datetime
 

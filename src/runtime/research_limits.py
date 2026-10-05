@@ -1,7 +1,7 @@
 """Explicit resource limits for a multi-paper research run."""
 DEFAULT_MAX_CALLS = 200
 DEFAULT_TIMEOUT_MINUTES = 120
-DEFAULT_FULLTEXT_PAPERS = 50
+DEFAULT_FULLTEXT_PAPERS = 60
 
 
 def research_limits(config):
@@ -12,4 +12,6 @@ def research_limits(config):
         except (TypeError, ValueError):
             return default
     return {'max_model_calls': number('max_model_calls', DEFAULT_MAX_CALLS, 1, 1000),
-            'timeout_minutes': number('timeout_minutes', DEFAULT_TIMEOUT_MINUTES, 1, 480)}
+            'timeout_minutes': number('timeout_minutes', DEFAULT_TIMEOUT_MINUTES, 1, 480),
+            'parallel_papers': number('parallel_papers', 3, 1, 6),
+            'parallel_downloads': number('parallel_downloads', 3, 1, 6)}

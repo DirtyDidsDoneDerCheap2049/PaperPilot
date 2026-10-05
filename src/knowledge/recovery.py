@@ -1,7 +1,6 @@
 """Agent run recovery: persist intermediate workflow state for crash recovery."""
 
 import json, logging
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 

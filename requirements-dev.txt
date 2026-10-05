@@ -6,3 +6,4 @@ ruff==0.16.8
 ziglang==0.13.0
 cmake==4.4.3
 ninja==1.13.2
+psutil==7.2.2

@@ -84,12 +84,18 @@ class MySQLStore:
         with self._lock,self.conn.cursor() as cursor:
             for sql in research_tables().values():cursor.execute(sql)
             cursor.execute('CREATE TABLE IF NOT EXISTS reader_schema(version INT PRIMARY KEY, applied_at DATETIME(6) DEFAULT CURRENT_TIMESTAMP(6)) ENGINE=InnoDB')
+            for name in ('publication_date','date_source'):
+                cursor.execute('SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=%s AND column_name=%s',('papers',name))
+                if not cursor.fetchone():cursor.execute(f'ALTER TABLE papers ADD COLUMN `{name}` LONGTEXT')
+            cursor.execute('SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=%s AND column_name=%s',('paper_organization','facets_json'))
+            if not cursor.fetchone():cursor.execute('ALTER TABLE paper_organization ADD COLUMN facets_json LONGTEXT')
             # Prefix indexes cover filtering on legacy long-text foreign identifiers.
             for table,column in (('messages','session_id'),('agent_runs','session_id'),('tool_calls','agent_run_id'),('gap_analyses','session_id'),('evidence_chunks','paper_id'),('parse_jobs','paper_id')):
                 index='reader_'+column
                 cursor.execute('SELECT 1 FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name=%s AND index_name=%s',(table,index))
                 if not cursor.fetchone():cursor.execute(f'CREATE INDEX `{index}` ON `{table}` (`{column}`(191))')
             cursor.execute('INSERT INTO reader_schema(version) VALUES(1) ON DUPLICATE KEY UPDATE version=version')
+            cursor.execute('INSERT INTO reader_schema(version) VALUES(2) ON DUPLICATE KEY UPDATE version=version')
 
     @contextmanager
     def transaction(self):

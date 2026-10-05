@@ -2,7 +2,6 @@ import argparse, sys, threading, time, logging, socket, os
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ai_reader")
 
 
@@ -17,6 +16,8 @@ def default_workspace():
 
 
 def main():
+    from src.runtime.standard_streams import initialize_standard_streams
+    initialize_standard_streams(require_pipes=any(arg == '--worker' or arg.startswith('--worker=') for arg in sys.argv[1:]))
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, 'reconfigure'):
             stream.reconfigure(encoding='utf-8')
@@ -31,7 +32,10 @@ def main():
     if args.worker:
         from src.runtime.worker import main as worker_main
         raise SystemExit(worker_main(args.worker))
+    logging.basicConfig(level=logging.INFO)
     ws_root = Path(args.workspace or default_workspace()).resolve()
+    from src.app.factory import _ensure_file_logging
+    _ensure_file_logging(ws_root)
     if args.import_history:
         from src.runtime.history_import import import_history
         import_history(args.import_history,ws_root)
@@ -63,7 +67,9 @@ def main():
     import uvicorn
     # Pin the mature WebSocket implementation: auto selected SansIO can race
     # WebView's close handshake during application shutdown.
-    server=uvicorn.Server(uvicorn.Config(app,host=host,port=port,log_level='info',ws='websockets'))
+    # Use the workspace's rotating log, not Uvicorn's terminal handlers.
+    server=uvicorn.Server(uvicorn.Config(app,host=host,port=port,log_level='info',
+                                       log_config=None,access_log=False,ws='websockets'))
 
     def run_server():
         server.run(sockets=[listener])
@@ -113,4 +119,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        logger.exception('桌面启动或运行失败')
+        raise

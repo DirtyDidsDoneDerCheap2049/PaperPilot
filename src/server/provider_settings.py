@@ -17,6 +17,7 @@ class SettingsUpdate(BaseModel):
     fast_model: str | None = Field(default=None,max_length=200)
     reasoning_model: str | None = Field(default=None,max_length=200)
     max_output_tokens: int | None = Field(default=None,ge=256,le=393216)
+    context_window: int | None = Field(default=None,ge=0,le=4194304)
     timeout_seconds: int | None = Field(default=None,ge=10,le=900)
     regular_effort: str | None = None
     analysis_effort: str | None = None
@@ -51,6 +52,8 @@ class SettingsUpdate(BaseModel):
     search_deep_parse_top_k: int | None = Field(default=None,ge=0,le=100)
     research_max_model_calls: int | None = Field(default=None,ge=1,le=1000)
     research_timeout_minutes: int | None = Field(default=None,ge=1,le=480)
+    research_parallel_papers: int | None = Field(default=None,ge=1,le=6)
+    research_parallel_downloads: int | None = Field(default=None,ge=1,le=6)
     @field_validator('base_url','embedding_base_url')
     @classmethod
     def url_valid(cls,v):
@@ -78,10 +81,11 @@ async def get_settings(request:Request):
     cfg=request.app.state.config
     from src.runtime.research_limits import research_limits
     llm=request.app.state.llm
-    return {'llm':dict(provider='openai-compatible',base_url=cfg.get('llm',{}).get('base_url',''),fast_model=llm.fast_model,reasoning_model=llm.reasoning_model,has_key=bool(os.getenv('DEEPSEEK_API_KEY')),max_output_tokens=llm.max_output_tokens,timeout_seconds=llm.timeout_seconds,regular_effort=llm.regular_effort,analysis_effort=llm.analysis_effort,deepseek_controls=is_deepseek(llm._base_url),capability_profile=llm.capability_profile,token_parameter=llm.token_parameter,json_output=llm.json_output,extra_body_params=llm.extra_body_params),
+    from src.llm.context_budget import context_window
+    return {'llm':dict(provider='openai-compatible',base_url=cfg.get('llm',{}).get('base_url',''),fast_model=llm.fast_model,reasoning_model=llm.reasoning_model,has_key=bool(os.getenv('DEEPSEEK_API_KEY')),max_output_tokens=llm.max_output_tokens,timeout_seconds=llm.timeout_seconds,regular_effort=llm.regular_effort,analysis_effort=llm.analysis_effort,deepseek_controls=is_deepseek(llm._base_url),capability_profile=llm.capability_profile,token_parameter=llm.token_parameter,json_output=llm.json_output,extra_body_params=llm.extra_body_params,context_window=llm.context_window or 0,effective_context_window=context_window(llm)),
             'mineru':dict(enabled=cfg.get('mineru',{}).get('enabled',False),model_version=cfg.get('mineru',{}).get('model_version','vlm'),has_token=bool(os.getenv('MINERU_API_TOKEN'))),
             'embedding':dict(provider=cfg.get('embedding',{}).get('provider','local'),model=cfg.get('embedding',{}).get('model',''),base_url=cfg.get('embedding',{}).get('base_url','https://api.siliconflow.cn/v1'),has_key=bool(os.getenv('SILICONFLOW_API_KEY'))),
-            'search':cfg.get('search',{}),
+            'retrieval':request.app.state.retriever.status(), 'search':cfg.get('search',{}),
             'research':research_limits(cfg),
             'storage':{'backend':getattr(request.app.state.db,'backend','sqlite'),'workspace':str(request.app.state.workspace_root)},
             'secret_storage':'Windows DPAPI' if os.name=='nt' else '本机文件权限保护（未加密）'}
@@ -89,7 +93,7 @@ async def get_settings(request:Request):
 @router.get('/api/settings/status')
 async def check_status(request:Request):
     request.app.state.db.fetchone('SELECT 1')
-    return {'llm':'已配置，尚未测试' if request.app.state.llm._ready else '未配置','database':getattr(request.app.state.db,'backend','sqlite'),'database_status':'正常','task_engine':getattr(request.app.state,'task_error',None) or 'C++ 本地任务内核','embedding':getattr(request.app.state.vs,'mode','未启用')}
+    return {'llm':'已配置，尚未测试' if request.app.state.llm._ready else '未配置','database':getattr(request.app.state.db,'backend','sqlite'),'database_status':'正常','task_engine':getattr(request.app.state,'task_error',None) or 'C++ 本地任务内核','embedding':request.app.state.retriever.status()['mode']}
 
 @router.post('/api/settings/test')
 async def test_connection(request:Request):
@@ -128,7 +132,7 @@ async def update_settings(body:SettingsUpdate,request:Request):
     for field,(section,key) in mapping.items():
         value=getattr(body,field,None)
         if value is not None: cfg.setdefault(section,{})[key]=value
-    for field in ('max_output_tokens','timeout_seconds','regular_effort','analysis_effort','capability_profile','token_parameter','json_output','extra_body_params'):
+    for field in ('context_window','max_output_tokens','timeout_seconds','regular_effort','analysis_effort','capability_profile','token_parameter','json_output','extra_body_params'):
         value=getattr(body,field)
         if value is not None:cfg.setdefault('llm',{})[field]=value
     try:
@@ -136,7 +140,8 @@ async def update_settings(body:SettingsUpdate,request:Request):
             cfg['llm'][field]=validate_model(cfg['llm']['base_url'],cfg['llm'][field])
     except ValueError as exc:
         raise HTTPException(400,str(exc)) from exc
-    for field,key in (('research_max_model_calls','max_model_calls'),('research_timeout_minutes','timeout_minutes')):
+    for field,key in (('research_max_model_calls','max_model_calls'),('research_timeout_minutes','timeout_minutes'),
+                      ('research_parallel_papers','parallel_papers'),('research_parallel_downloads','parallel_downloads')):
         value=getattr(body,field)
         if value is not None:cfg.setdefault('research',{})[key]=value
     if body.search_deep_parse_top_k is not None:
@@ -154,7 +159,9 @@ async def update_settings(body:SettingsUpdate,request:Request):
     state.config=cfg
     from src.runtime.research_limits import research_limits
     state.llm.max_calls=research_limits(cfg)['max_model_calls']
+    state.llm.parallel_papers=research_limits(cfg)['parallel_papers']
     await state.llm.close()
     state.llm.configure(api_key=os.getenv('DEEPSEEK_API_KEY',''),base_url=cfg['llm'].get('base_url'),fast_model=cfg['llm'].get('fast_model'),reasoning_model=cfg['llm'].get('reasoning_model'),max_output_tokens=cfg['llm'].get('max_output_tokens'),timeout_seconds=cfg['llm'].get('timeout_seconds'),regular_effort=cfg['llm'].get('regular_effort'),analysis_effort=cfg['llm'].get('analysis_effort'))
     state.llm.configure(**{key:cfg['llm'].get(key) for key in ('capability_profile','token_parameter','json_output','extra_body_params')})
+    state.llm.configure(context_window=cfg['llm'].get('context_window',0))
     return {'status':'updated','applied':{k:'updated' for k in changed},'message':'已保存。新任务使用新配置；向量检索类型变更后请重启应用。'}

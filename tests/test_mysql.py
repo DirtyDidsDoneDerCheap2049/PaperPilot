@@ -37,6 +37,15 @@ def test_schema_transaction_unicode_and_duplicates(mysql_db):
     assert db.fetchone("SELECT title FROM sessions WHERE id='s'")['title']=='中文 📚'
     assert db.fetchone("SELECT '?' AS literal,? AS value",('50% 中文?',))['value']=='50% 中文?'
 
+def test_publication_date_upgrade_preserves_existing_papers(mysql_db):
+    db=mysql_db
+    db.execute('INSERT INTO papers(id,title,year) VALUES(?,?,?)',('old','Existing title',2025))
+    db.execute('ALTER TABLE papers DROP COLUMN publication_date')
+    db.execute('ALTER TABLE papers DROP COLUMN date_source')
+    db.init_schema();db.init_schema()
+    assert db.fetchone('SELECT title,publication_date,date_source FROM papers WHERE id=?',('old',))=={'title':'Existing title','publication_date':None,'date_source':None}
+
+
 def test_native_mysql_lifecycle(mysql_db,tmp_path):
     from tests.test_desktop_delivery import Native
     first=Native(tmp_path/'tasks.db')

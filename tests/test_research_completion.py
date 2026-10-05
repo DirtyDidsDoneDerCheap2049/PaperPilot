@@ -51,7 +51,8 @@ def test_followup_exposes_unread_papers_and_prioritizes_requested_counterexample
 def test_delivery_summary_is_the_authored_conclusion_not_audit_or_other_sections():
     from src.analysis.reader_report import report_summary
     text='# 研究\n## 结论\n这是有依据但仍有限制的判断。[1]\n\n第二段说明。\n## 已有工作\n其他内容'
-    assert report_summary(text)=='这是有依据但仍有限制的判断。[1]'
+    assert report_summary(text)=='这是有依据但仍有限制的判断。[1]\n\n第二段说明。'
+    assert '其他内容' not in report_summary(text)
     assert report_summary('# 历史报告\n旧格式原文')==''
 
 def test_compact_evidence_keeps_appended_verified_method_and_original_id():
@@ -74,11 +75,13 @@ def test_new_question_cannot_inherit_invented_novelty_assertions():
     from src.agents.orchestrator import Orchestrator
     class Model:
         async def chat_json(self,messages):
-            assert 'old assistant claim' not in messages[-1]['content']
-            return {'research_question':'查找检索算法的空白','target_task':'retrieval','search_queries':['retrieval evidence'],
+            assert 'old assistant claim' in messages[-1]['content']
+            assert '历史助手回答可能错误' in messages[0]['content']
+            return {'context_relation':'new_topic','research_question':'查找检索算法的空白','target_task':'retrieval','search_queries':['retrieval evidence'],
                     'claims_to_verify':['世界上不存在相关方法']}
     direction=asyncio.run(Orchestrator(None,Model(),None,None)._parse_direction('检索算法有哪些空白？',recent_context='old assistant claim'))
     assert direction['claims_to_verify']==[]
+    assert direction['context_relation']=='new_topic' and not direction.get('context_recovered')
 
 def test_report_rejects_unknown_citations_and_internal_dump():
     text='# 结果\n## 结论\n'+('有依据的研究说明。'*50)+'[99]\n## 候选研究空白\n## 已有工作\n## 本轮边界\ncoverage_summary'

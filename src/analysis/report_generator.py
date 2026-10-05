@@ -1,4 +1,4 @@
-import json, logging, os, re
+import json, logging, os
 from datetime import datetime
 from pathlib import Path
 

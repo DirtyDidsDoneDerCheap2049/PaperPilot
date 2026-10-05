@@ -19,6 +19,7 @@ class EvidenceGroundedAnalyzer:
     def __init__(self, llm_client, batch_size: int = 8):
         self.llm = llm_client
         self.batch_size = max(1, int(batch_size or 8))
+        self.parallel_batches = max(1, min(6, int(getattr(llm_client, 'parallel_papers', 3))))
 
 
     @staticmethod
@@ -331,6 +332,9 @@ class EvidenceGroundedAnalyzer:
                 },
             ])
         except Exception as exc:
+            from src.llm.deepseek_client import LLMStopError
+            if isinstance(exc, LLMStopError) or getattr(exc, 'status_code', None) in {401, 402, 403}:
+                raise
             logger.warning("Evidence audit batch failed: %s", exc)
             result = {
                 "paper_assessments": [
@@ -382,9 +386,12 @@ class EvidenceGroundedAnalyzer:
             return {"matrix": {}, "gaps": [], "coverage_audit": []}
 
         claims = self.claims_from_direction(direction)
-        coverage_audit = []
-        for start in range(0, len(profiles), self.batch_size):
-            batch = profiles[start:start + self.batch_size]
+        from src.runtime.parallel import ordered_map
+        from src.llm.request_context import model_context
+        async def audit_one(batch):
+            with model_context(item_label='核对论文证据：'+str(batch[0].get('paper_title') or batch[0]['paper_id'])+' 等 '+str(len(batch))+' 篇'):
+                return await audit_and_retry(batch)
+        async def audit_and_retry(batch):
             audited = await self._audit_batch(direction, claims, batch)
             missing = {p['paper_id'] for p in audited if p.get('assessment_status')!='audited'
                        or p.get('audit_mode')=='deterministic_fallback'}
@@ -392,7 +399,9 @@ class EvidenceGroundedAnalyzer:
                 retried = await self._audit_batch(direction, claims, [p for p in batch if p['paper_id'] in missing])
                 replacements = {p['paper_id']:p for p in retried}
                 audited = [replacements.get(p['paper_id'],p) for p in audited]
-            coverage_audit.extend(audited)
+            return audited
+        batches = [profiles[start:start+self.batch_size] for start in range(0, len(profiles), self.batch_size)]
+        coverage_audit = [p for batch in await ordered_map(batches, audit_one, self.parallel_batches) for p in batch]
 
         synthesis_payload = {
             "direction": direction,
@@ -439,6 +448,9 @@ class EvidenceGroundedAnalyzer:
                 },
             ])
         except Exception as exc:
+            from src.llm.deepseek_client import LLMStopError
+            if isinstance(exc, LLMStopError) or getattr(exc, 'status_code', None) in {401, 402, 403}:
+                raise
             logger.warning("Evidence synthesis failed: %s", exc)
             result = {
                 "matrix": {},

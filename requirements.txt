@@ -19,3 +19,8 @@ aiofiles==25.1.0
 python-multipart==0.0.32
 pymysql==1.1.2
 cryptography==50.0.1
+chromadb==1.5.9
+onnxruntime==1.30.0
+tokenizers==0.23.2
+numpy==2.5.3
+filelock==4.0.1

@@ -3,6 +3,8 @@ import contextlib
 import json
 import os
 import sys
+import time
+import uuid
 from pathlib import Path
 
 
@@ -27,6 +29,15 @@ class TaskService:
         self.worker = None
         self.loop_task = None
         self.stopping = False
+        self.revision = 0
+        self.changed = asyncio.Condition()
+
+    async def wait_for_update(self, revision, timeout=5):
+        async with self.changed:
+            try:
+                await asyncio.wait_for(self.changed.wait_for(lambda: self.revision != revision), timeout)
+            except asyncio.TimeoutError:
+                pass
 
     async def start(self):
         binary = native_binary()
@@ -60,18 +71,32 @@ class TaskService:
                 raise TaskError('任务内核通信失败，请重启应用后查询任务状态') from exc
             if not reply.get('ok'):
                 raise TaskError(reply.get('error', 'native_error'))
+            if op in {'event', 'submit', 'claim', 'finish', 'cancel', 'retry'} and reply['data'] is not None:
+                async with self.changed:
+                    self.revision += 1
+                    self.changed.notify_all()
             return reply['data']
 
     async def active_session(self, session_id):
         return next((j for j in await self.rpc('list') if j['session_id']==session_id and j['status'] in {'queued','running','cancel_requested'}), None)
 
     async def _loop(self):
+        idle_since=time.monotonic()
         while not self.stopping:
             try:
                 job = await self.rpc('claim')
                 if job:
                     await self._execute(job)
+                    idle_since=time.monotonic()
                 else:
+                    marker=self.workspace/'db/paper-retrieval/needs-update'
+                    if marker.is_file() and time.monotonic()-idle_since>=5:
+                        generation=marker.stat().st_mtime_ns
+                        await self.rpc('submit',id=str(uuid.uuid4()),session_id='__paper_index__',
+                            request_key='auto-index:'+str(generation),payload={'mode':'library_index','session_id':'__paper_index__',
+                            'background':True,'research_limits':{'timeout_minutes':120}})
+                        if marker.exists() and marker.stat().st_mtime_ns==generation:marker.unlink()
+                        idle_since=time.monotonic()
                     await asyncio.sleep(.3)
             except asyncio.CancelledError:
                 raise
@@ -88,6 +113,8 @@ class TaskService:
         return [sys.executable, '-u', '-m', 'src.runtime.worker', str(self.workspace)]
 
     async def _execute(self, job):
+        payload = json.loads(job['payload'])
+        background_index = payload.get('mode') == 'library_index' and payload.get('background') is True
         root = Path(__file__).resolve().parents[2]
         command = self.worker_command()
         logdir = self.workspace / '.agent_history'
@@ -122,16 +149,33 @@ class TaskService:
                         await self.broadcaster.broadcast(job['session_id'], event)
             reader = asyncio.create_task(read_events())
             from src.runtime.research_limits import research_limits
-            limits=research_limits({'research':json.loads(job['payload']).get('research_limits',{})})
+            limits=research_limits({'research':payload.get('research_limits',{})})
             deadline = asyncio.get_running_loop().time() + limits['timeout_minutes'] * 60
+            priority_check = 0
             try:
                 while self.worker.returncode is None:
                     current = await self.rpc('get', id=job['id'])
                     if self.stopping or current['status']=='cancel_requested':
                         status = 'interrupted' if self.stopping else 'cancelled'
-                        error = '应用关闭，执行中断' if self.stopping else '已取消。已发送的外部请求仍可能计费。'
+                        error = '应用关闭，执行中断' if self.stopping else ('索引已取消，已完成的索引保留。' if payload.get('mode') == 'library_index' else '已取消。已发送的外部请求仍可能计费。')
                         self.worker.terminate()
                         break
+                    now = asyncio.get_running_loop().time()
+                    if background_index and now >= priority_check:
+                        priority_check = now + 1
+                        queued = await self.rpc('list')
+                        if any(j['status'] == 'queued' and json.loads(j['payload']).get('mode') != 'library_index' for j in queued):
+                            marker = self.workspace / 'db/paper-retrieval/needs-update'
+                            if not marker.parent.resolve().is_relative_to(self.workspace.resolve()) or marker.parent.is_symlink() or marker.parent.is_junction():
+                                raise TaskError('索引目录必须位于工作区内')
+                            marker.parent.mkdir(parents=True, exist_ok=True)
+                            if marker.is_symlink():
+                                raise TaskError('索引更新标记不能是目录链接')
+                            marker.write_text('', encoding='utf-8')
+                            await self.rpc('cancel', id=job['id'])
+                            status, error = 'cancelled', '索引已暂缓，优先处理新任务；已完成索引保留，空闲后继续。'
+                            self.worker.terminate()
+                            break
                     if asyncio.get_running_loop().time()>deadline:
                         error=f"任务超过 {limits['timeout_minutes']} 分钟上限，已停止。已有资料保留，可调整研究预算后重新提交。"
                         self.worker.terminate()
@@ -165,7 +209,7 @@ class TaskService:
             self.db.execute("UPDATE agent_runs SET status=?,error=?,finished_at=datetime('now') WHERE session_id=? AND status='running'",(final['status'],error,job['session_id']))
         if final['status']=='succeeded' and result and result.get('event'):
             await self.broadcaster.broadcast(job['session_id'], result['event'])
-        elif final['status']!='succeeded':
+        elif final['status']!='succeeded' and json.loads(job['payload']).get('mode') not in {'library_organize','library_index'}:
             await self.broadcaster.broadcast(job['session_id'], {'type':'agent_cancelled' if final['status']=='cancelled' else 'agent_failed','session_id':job['session_id'],'agent':'Orchestrator','error':error,'message':error})
         await self.broadcaster.broadcast(job['session_id'], {'type':'job_updated','session_id':job['session_id'],'job_id':job['id'],'status':final['status']})
 

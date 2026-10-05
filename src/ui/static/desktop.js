@@ -60,6 +60,8 @@ async function showSettings() {
       <label class="settings-field"><span>接口参数方案</span><select id="cfg-capability"><option value="auto">自动识别（官方 DeepSeek 启用专用参数）</option><option value="compatible">通用 OpenAI 兼容（不附加厂商参数）</option><option value="deepseek">DeepSeek 参数（含兼容网关）</option></select></label>
       <details class="optional-settings"><summary>模型调用参数 · 思考与输出预算</summary>
       ${input('cfg-output','每次请求输出预算（token，含模型思考）',String(cfg.llm.max_output_tokens),'number')}
+      ${input('cfg-context','模型上下文容量（输入＋输出 token；0 自动）',String(cfg.llm.context_window||0),'number')}
+      <p class="settings-note">当前按 ${cfg.llm.effective_context_window||128000} token 分配读取预算。官方 DeepSeek 自动按 1M；其他服务默认 128K，请按服务实际容量填写。输入使用保守字节估算，实际计费用量以服务返回为准。</p>
       ${input('cfg-timeout','单次请求超时（秒）',String(cfg.llm.timeout_seconds),'number')}
       <label class="settings-field"><span>输出预算参数名</span><select id="cfg-token-param"><option value="max_tokens">max_tokens</option><option value="max_completion_tokens">max_completion_tokens</option><option value="omit">不发送，由服务决定</option></select></label>
       <label class="settings-field"><span>JSON 输出约束</span><select id="cfg-json-output"><option value="auto">自动（通用服务只使用提示词）</option><option value="json_object">发送 response_format: json_object</option><option value="prompt">仅提示词约束</option></select></label>
@@ -69,16 +71,21 @@ async function showSettings() {
       <label class="settings-field"><span>厂商附加参数（可选 JSON）</span><textarea id="cfg-extra-body" rows="4" spellcheck="false">${esc(JSON.stringify(cfg.llm.extra_body_params||{},null,2))}</textarea></label>
       <p class="settings-note">只支持 temperature、top_p、reasoning_effort、thinking、enable_thinking 和 chat_template_kwargs。勿填写密钥。参数必须符合厂商文档；不支持的参数会导致请求失败。这里填写的参数优先于自动参数。</p></details>
       <div class="settings-group-title">研究任务 · 检索与处理预算</div>
-      ${input('cfg-parse','本轮尝试处理的全文篇数（0–100）',String(cfg.search.deep_parse_top_k??50),'number')}
+      ${input('cfg-parse','本轮论文处理上限（默认 60，最多 100）',String(cfg.search.deep_parse_top_k??60),'number')}
       ${input('cfg-calls','每任务模型请求上限（含重试，1–1000）',String(cfg.research.max_model_calls),'number')}
       ${input('cfg-minutes','任务时限（分钟，1–480）',String(cfg.research.timeout_minutes),'number')}
-      <p class="settings-note">新的工作区默认尝试处理 50 篇全文。已保存的范围会保留；超过上限或失败的论文会列在报告中，不算作已读。补全文后切换「研究 Agent」重新分析；「讨论结果」不会重新检索。</p>
+      <p class="settings-note">新工作区默认最多读取 60 篇论文，优先使用已选论文和已有全文。未读取、超过上限或处理失败的论文会列在结果中，不算作已读。已有工作区按保存的设置运行；补全文后可在原会话使用「研究 Agent」重新分析，「讨论结果」不会重新检索。</p>
+      <details class="optional-settings"><summary>高级选项 · 研究速度</summary>
+      ${input('cfg-parallel-papers','同时读取或核对的请求数（1–6）',String(cfg.research.parallel_papers??3),'number')}
+      ${input('cfg-parallel-downloads','同时获取的论文数（1–6）',String(cfg.research.parallel_downloads??3),'number')}
+      <p class="settings-note">默认同时处理 3 项独立工作。不会减少论文范围或降低思考强度，也不增加任务请求上限；服务限流或连接不稳定时可调到 1。每个证据审计请求可能包含多篇论文。新设置从下次任务生效。</p></details>
       <details class="optional-settings"><summary>可选服务与分析范围</summary><div class="settings-group-title">论文解析</div>
       <label class="settings-field"><span>使用 MinerU 外部解析</span><input id="cfg-mineru" type="checkbox" ${cfg.mineru.enabled?'checked':''}></label>
       ${input('cfg-mineru-key','MinerU Token','','password',hint(cfg.mineru.has_token))}
       <p class="settings-note">默认可用本地 PDF 文本提取。复杂公式、扫描 PDF 可能需要外部解析，开启后论文会发送给 MinerU。</p>
       <div class="settings-group-title">资料检索</div>
-      <label class="settings-field"><span>检索方式</span><select id="cfg-vector"><option value="local">本地文本检索（无需 API）</option><option value="openai">外部向量服务（需要可选依赖）</option></select></label>
+      <p class="settings-note">论文全文：${esc(cfg.retrieval?.mode||'本地文本＋向量')}，已索引 ${cfg.retrieval?.documents||0} 篇。模型随软件包提供，不上传文本、不产生 API 费用。在论文库「全文检索」中增量更新。</p>
+      <label class="settings-field"><span>题录辅助检索</span><select id="cfg-vector"><option value="local">本地文本（全文使用本地向量）</option><option value="openai">外部向量服务（可选，会外发题录）</option></select></label>
       ${input('cfg-vector-base','向量服务地址',cfg.embedding.base_url,'url')}${input('cfg-vector-model','向量模型',cfg.embedding.model)}${input('cfg-vector-key','向量 API Key','','password',hint(cfg.embedding.has_key))}
       ${input('cfg-rounds','检索查询数',String(cfg.search.max_rounds||3),'number')}${input('cfg-topk','每次检索篇数',String(cfg.search.top_k_per_round||20),'number')}
       <p class="settings-note">${FULLTEXT_NOTE}</p><p class="settings-note">密钥保存方式：${esc(cfg.secret_storage)}。切换向量服务后需重启，旧索引需要重新生成。</p>
@@ -111,6 +118,9 @@ async function showSettings() {
         const payload={base_url:value('cfg-base'),fast_model:value('cfg-fast'),reasoning_model:value('cfg-deep'),mineru_enabled:modal.querySelector('#cfg-mineru').checked,embedding_provider:value('cfg-vector'),embedding_base_url:value('cfg-vector-base'),embedding_model:value('cfg-vector-model'),search_max_rounds:Number(value('cfg-rounds')),search_top_k_per_round:Number(value('cfg-topk')),search_deep_parse_top_k:Number(value('cfg-parse'))};
         payload.research_max_model_calls=Number(value('cfg-calls'));
         payload.research_timeout_minutes=Number(value('cfg-minutes'));
+        payload.research_parallel_papers=Number(value('cfg-parallel-papers'));
+        payload.context_window=Number(value('cfg-context'));
+        payload.research_parallel_downloads=Number(value('cfg-parallel-downloads'));
         Object.assign(payload,{max_output_tokens:Number(value('cfg-output')),timeout_seconds:Number(value('cfg-timeout')),regular_effort:value('cfg-regular-effort'),analysis_effort:value('cfg-analysis-effort')});
         Object.assign(payload,{capability_profile:value('cfg-capability'),token_parameter:value('cfg-token-param'),json_output:value('cfg-json-output'),extra_body_params:JSON.parse(value('cfg-extra-body')||'{}')});
         for(const [id,key] of [['cfg-key','deepseek_api_key'],['cfg-mineru-key','mineru_api_token'],['cfg-vector-key','siliconflow_api_key']]) if(value(id)) payload[key]=value(id);
@@ -158,13 +168,14 @@ async function showDesktopJobs(){
   if(!desktopJobs.length){list.innerHTML='<p class="desktop-empty">还没有任务。配置模型后，输入一个研究问题开始。</p>';return;}
   for(const job of desktopJobs){
     const row=document.createElement('article');row.className='desktop-job';
-    row.innerHTML=`<div><strong>${esc(jobLabels[job.status]||job.status)}</strong><span class="job-time">${esc(job.created_at)}</span></div><code>${esc(job.id)}</code>${job.error?`<p>${esc(job.error)}</p>`:''}<div class="desktop-action-row"></div>`;
+    row.innerHTML=`<div><strong>${esc(jobLabels[job.status]||job.status)}</strong><span class="job-time" title="本地时间">${esc(formatConversationTime(job.created_at))}</span></div><code>${esc(job.id)}</code>${job.error?`<p>${esc(job.error)}</p>`:''}${jobUsageHTML(job.usage_summary)}<div class="desktop-action-row"></div>`;
     const scope=document.createElement('p');
-    scope.textContent=(job.mode==='report_chat'?'讨论结果':'研究 Agent')+(job.research_limits?` · 请求上限 ${job.research_limits.max_model_calls} 次 · 时限 ${job.research_limits.timeout_minutes} 分钟`:' · 旧任务未记录预算快照');
+    const index=job.mode==='library_index',library=job.mode==='library_organize'||index;
+    scope.textContent=index?'论文全文索引 · 本地运行，无 API 费用':library?'论文库自动整理 · 分类与重复折叠':(job.mode==='report_chat'?'讨论结果':'研究 Agent')+(job.research_limits?` · 请求上限 ${job.research_limits.max_model_calls} 次 · 时限 ${job.research_limits.timeout_minutes} 分钟`:' · 旧任务未记录预算快照');
     row.insertBefore(scope,row.querySelector('.desktop-action-row'));
     const actions=row.querySelector('.desktop-action-row');
-    const details=document.createElement('button');details.className='rc-btn';details.textContent='查看研究过程';details.onclick=()=>{modal.remove();openResearchConversation(job.session_id,job.id);};actions.append(details);
-    const open=document.createElement('button');open.className='rc-btn';open.textContent='打开会话';open.onclick=()=>{modal.remove();loadSession(job.session_id);};actions.append(open);
+    const details=document.createElement('button');details.className='rc-btn';details.textContent=index?'查看全文索引':library?'查看论文库整理':'查看研究过程';details.onclick=()=>{modal.remove();if(index){switchView('library');showFulltextIndex();}else if(library){switchView('library');attachLibraryOrganization(job.id);}else{openResearchConversation(job.session_id,job.id);}};actions.append(details);
+    if(!library){const open=document.createElement('button');open.className='rc-btn';open.textContent='打开会话';open.onclick=()=>{modal.remove();loadSession(job.session_id);};actions.append(open);}
     if(['interrupted','failed','cancelled'].includes(job.status)){
       const retry=document.createElement('button');retry.className='rc-btn';retry.textContent='重试任务';retry.onclick=async()=>{if(!confirm('重试会重新执行分析，已验证的论文画像可能复用，外部 API 仍可能再次计费。继续吗？'))return;const r=await fetch(`/api/jobs/${encodeURIComponent(job.id)}/retry`,{method:'POST'});if(!r.ok){toast((await r.json()).detail||'重试失败','error');return;}modal.remove();await refreshDesktopJobs();showDesktopJobs();};actions.append(retry);
     }

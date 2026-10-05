@@ -90,7 +90,7 @@ def test_research_budget_settings_are_applied(tmp_path,monkeypatch):
         assert client.post('/api/settings',json={'search_deep_parse_top_k':60,'research_max_model_calls':320,'research_timeout_minutes':180}).status_code==200
         settings=client.get('/api/settings').json()
         assert settings['search']['deep_parse_top_k']==60
-        assert settings['research']=={'max_model_calls':320,'timeout_minutes':180}
+        assert settings['research']=={'max_model_calls':320,'timeout_minutes':180,'parallel_papers':3,'parallel_downloads':3}
         assert app.state.llm.max_calls==320
         app.state.llm.calls=320
         with pytest.raises(RuntimeError,match='320'):app.state.llm._reserve_call()

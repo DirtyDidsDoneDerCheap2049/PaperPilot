@@ -1,4 +1,3 @@
-from pathlib import Path
 
 WORKSPACE_TEMPLATE_DIRS = [
     "papers/arxiv", "papers/manual", "papers/parsed",
@@ -43,10 +42,13 @@ search:
   enable_openalex: false
   max_rounds: 3
   top_k_per_round: 20
-  deep_parse_top_k: 50
+  deep_parse_top_k: 60
 research:
+  max_new_papers: 60
   max_model_calls: 200
   timeout_minutes: 120
+  parallel_papers: 3
+  parallel_downloads: 3
 embedding:
   provider: "local"
   model: "BAAI/bge-large-en-v1.5"

@@ -89,8 +89,18 @@
       <div class="view-panel" id="view-library" style="display:none">
         <div class="library-toolbar">
           <button class="lib-btn" onclick="uploadPaper()">上传论文</button>
-          <input class="lib-search" id="library-search" placeholder="搜索标题、作者、摘要..." oninput="loadPapers()" />
+          <button class="lib-btn library-organize-btn" id="library-organize" onclick="showLibraryOrganizer()"><span data-icon="folder"></span>自动整理</button>
+          <button class="lib-btn" onclick="showFulltextIndex()"><span data-icon="search"></span>全文检索</button>
+          <input class="lib-search" id="library-search" placeholder="搜索标题、作者、摘要或标签..." oninput="loadPapers()" />
         </div>
+        <div class="library-organization-header">
+          <p id="library-overview">按研究主题整理论文与已有解析，合并重复显示。</p>
+          <label class="library-duplicates-toggle"><input type="checkbox" id="library-show-duplicates" onchange="loadPapers()">显示合并来源</label>
+        </div>
+        <nav class="library-categories" id="library-categories" aria-label="论文分类"></nav>
+        <div class="library-facets" id="library-facets" aria-label="组合筛选"></div>
+        <p class="library-facet-note">可组合筛选。未标明表示现有资料不足，不能当作单帧或不使用先验。</p>
+        <div class="library-organize-status" id="library-organize-status" hidden aria-live="polite"></div>
         <div class="library-selection-bar" id="library-selection-bar" hidden>
           <span id="library-selection-count">已选择 0 篇</span>
           <button class="lib-btn" onclick="useSelectedPapersInChat()">去提问</button>
@@ -115,6 +125,7 @@
             </tbody>
           </table>
         </div>
+        <div class="library-pagination" id="library-pagination" hidden><span id="library-page-info"></span><button class="rc-btn" id="library-previous" onclick="changeLibraryPage(-1)">上一页</button><button class="rc-btn" id="library-next" onclick="changeLibraryPage(1)">下一页</button></div>
       </div>
 
       <!-- 对话视图 -->
@@ -143,7 +154,7 @@
           <div class="composer-right">
             <span class="token-count" id="token-count">0</span>
             <span class="selected-context-badge" id="selected-context-badge" hidden></span>
-            <button id="chat-mode-btn" class="mode-toggle-btn" onclick="toggleContextChatMode()" title="核查已有实现与候选研究空白；点击可切换为讨论已有结果">研究 Agent</button>
+            <button id="chat-mode-btn" class="mode-toggle-btn" onclick="toggleContextChatMode()" title="按问题检索、比较和核验；点击可切换为讨论已有结果">研究 Agent</button>
             <span class="model-badge" id="model-badge">自配模型</span>
             <button id="send-btn" onclick="sendMessage()">发送</button>
             <button id="cancel-btn" onclick="cancelTask()" style="display:none">取消</button>
@@ -154,6 +165,7 @@
 
       <!-- 报告视图 -->
       <div class="view-panel" id="view-reports" style="display:none">
+        <div class="report-list-toolbar"><p>按研究主题与用途区分报告，原文和文件路径保持不变。</p><button class="lib-btn" id="report-auto-name" onclick="autoNameReports()">模型命名</button></div>
         <div class="report-list" id="report-list">
           <div class="lib-empty">暂无报告。运行一次空白分析即可生成第一份报告。</div>
         </div>
@@ -196,8 +208,10 @@
       <!-- 缺全文视图 -->
       <div class="view-panel" id="view-missing" style="display:none">
         <h2 class="missing-header">补充论文全文</h2>
-        <p class="panel-desc">这里显示工作区中未能获取全文的论文。你可以补充 PDF，也可以保留摘要继续研究；仅有摘要的结论会标明证据限制。上传后，在原会话重新运行研究 Agent 才会更新报告。</p>
-        <div class="missing-scope-controls"><label for="missing-scope">查看范围</label><select id="missing-scope" onchange="loadMissingPapers()"><option value="session">本会话最近一轮</option><option value="workspace">整个工作区</option></select><button class="rc-btn" onclick="loadMissingPapers()">刷新列表</button><button class="rc-btn" onclick="switchView('chat')">返回研究</button></div>
+        <p class="panel-desc">优先补充与你的研究有关、且没有可用本地全文的论文。不必补齐整个论文库；检索入库不等于必读。先打开原文页或按题名检索，取得 PDF 后上传。仅有摘要也可继续研究，但结论会保留证据限制；上传不会改写旧报告。</p>
+        <div class="missing-scope-controls"><label for="missing-scope">查看范围</label><select id="missing-scope" onchange="loadMissingPapers()"><option value="research">现有研究最近一轮</option><option value="session">本会话最近一轮</option><option value="workspace">整个论文库</option></select><input id="missing-search" type="search" placeholder="搜索标题、DOI 或分类" aria-label="搜索待补全文论文" oninput="loadMissingPapers()"><button class="rc-btn" onclick="loadMissingPapers()">刷新列表</button><button class="rc-btn" onclick="switchView('chat')">返回研究</button></div>
+        <p class="missing-overview" id="missing-overview" role="status"></p>
+        <details class="missing-search-guide"><summary>怎样查找全文</summary><p>先用 DOI / 出版社原文页查找 PDF；如需机构权限，可通过学校图书馆的数据库入口登录。再查 Google Scholar 的 PDF / 全部版本、arXiv、作者主页或会议公开库。链接只是查找入口，已记录的 PDF 地址也可能需要访问权限。</p><div id="missing-database-links"></div><p>选择范围依据研究记录，不保证每篇都与当前问题高度相关。这里不会自动打开外部网站或绕过访问权限。</p></details>
         <div class="missing-table-wrap">
           <table class="paper-table"><thead><tr>
             <th class="col-title">标题</th><th class="col-venue">会议/年份</th><th class="col-status">状态</th><th class="col-actions">操作</th>
@@ -206,6 +220,7 @@
             <tr><td colspan="4" class="lib-empty">暂无缺全文论文。</td></tr>
           </tbody></table>
         </div>
+        <div class="library-pagination" id="missing-pagination" hidden><span id="missing-page-info"></span><button class="rc-btn" id="missing-previous" onclick="changeMissingPage(-1)">上一页</button><button class="rc-btn" id="missing-next" onclick="changeMissingPage(1)">下一页</button></div>
       </div>
     </section>
   </main>
@@ -233,6 +248,8 @@
 <script src="/static/app.js"></script>
 <script src="/static/desktop.js"></script>
 <script src="/static/workbench.js"></script>
+<script src="/static/library.js"></script>
+<link rel="stylesheet" href="/static/library.css">
 <script src="/static/chat-research.js"></script>
 <link rel="stylesheet" href="/static/chat-research.css">
 <script src="/static/report-reading.js"></script>

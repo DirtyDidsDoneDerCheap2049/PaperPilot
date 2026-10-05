@@ -2,6 +2,7 @@ import json, logging, uuid, asyncio, time, re
 from datetime import datetime
 from pathlib import Path
 from src.agents.base import BaseAgent, AgentContext, AgentResult
+from src.analysis.research_plan import normalize_plan, research_today, scoped_papers
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +27,13 @@ AGENT_LABELS = {
 class Orchestrator(BaseAgent):
     name = "Orchestrator"
 
-    def __init__(self, db, llm, vs, kb, ws_manager=None):
+    def __init__(self, db, llm, vs, kb, ws_manager=None, retriever=None):
         self.db = db
         self.llm = llm
         self.vs = vs
         self.kb = kb
         self.ws_manager = ws_manager
+        self.retriever = retriever
 
     async def _notify(self, session_id: str, event: dict):
         if self.ws_manager:
@@ -51,7 +53,7 @@ class Orchestrator(BaseAgent):
         })
 
     async def _create_agent_run(self, session_id: str, agent_name: str,
-                                input_data: dict, message: str | None = None) -> str:
+                                input_data: dict, message: str | None = None, label: str | None = None) -> str:
         run_id = str(uuid.uuid4())
         self.db.execute(
             """INSERT INTO agent_runs (id, session_id, agent_name, status,
@@ -66,6 +68,7 @@ class Orchestrator(BaseAgent):
             "type": "agent_started", "session_id": session_id,
             "agent": agent_name, "run_id": run_id,
             "message": message or AGENT_LABELS.get(agent_name, f"{agent_name} 开始"),
+            "label": label,
             "stage_index": stage_index, "total_stages": total_stages,
         })
         return run_id
@@ -89,6 +92,9 @@ class Orchestrator(BaseAgent):
 
     async def run(self, ctx: AgentContext,
                   input_data: dict) -> AgentResult:
+        if input_data.get('mode') == 'report_revision':
+            from src.analysis.report_revision import run_report_revision
+            return await run_report_revision(self, ctx, input_data)
         user_message = input_data.get("message", "")
         selected_paper_ids = [pid for pid in input_data.get("selected_paper_ids", []) if isinstance(pid, str)]
         user_message_id = input_data.get("message_id") or str(uuid.uuid4())
@@ -97,6 +103,18 @@ class Orchestrator(BaseAgent):
         existing = self.db.fetchone(
             "SELECT id FROM sessions WHERE id=?", (session_id,)
         )
+        # Capture before writing this turn. Persist once so a retry cannot read
+        # its own report or discussion that happened after the original input.
+        snapshot = self._conversation_snapshot(session_id, user_message_id, user_message) if existing else {
+            'version':1,'session_id':session_id,'message':user_message,
+            'previous_direction':{},'recent_context':'','paper_ids':[]}
+        if not isinstance(snapshot.get('selected_papers'),list):
+            snapshot={**snapshot,'selected_papers':[
+                {'id':p['id'],'title':str(p.get('title') or '')[:220],
+                 'has_fulltext_path':bool(p.get('parsed_markdown_path') or p.get('fulltext_path'))}
+                for p in self._selected_papers(selected_paper_ids)]}
+        previous_direction = snapshot['previous_direction']
+        recent_context = snapshot['recent_context']
         if not existing:
             self.db.execute(
                 """INSERT INTO sessions (id, workspace_id, title, status)
@@ -104,18 +122,12 @@ class Orchestrator(BaseAgent):
                 (session_id, ctx.workspace_id, user_message[:80], "busy"),
             )
         self.db.execute(
-            """INSERT OR IGNORE INTO messages (id, session_id, role, content)
-               VALUES (?,?,?,?)""",
-            (user_message_id, session_id, "user", user_message),
+            """INSERT OR IGNORE INTO messages (id, session_id, role, content, metadata_json)
+               VALUES (?,?,?,?,?)""",
+            (user_message_id, session_id, "user", user_message,
+             json.dumps({'mode':'analysis','selected_paper_ids':selected_paper_ids,
+                         'context_snapshot':snapshot},ensure_ascii=False)),
         )
-
-        previous_direction = self._latest_session_direction(session_id)
-        recent_context = self._recent_direction_context(
-            session_id, exclude_message_id=user_message_id
-        )
-        research_context = self._latest_research_context(session_id)
-        if research_context:
-            recent_context = research_context + "\n最近对话：\n" + recent_context
 
         try:
             t0 = time.time()
@@ -138,6 +150,7 @@ class Orchestrator(BaseAgent):
                 user_message,
                 previous_direction=previous_direction,
                 recent_context=recent_context,
+                selected_papers=snapshot['selected_papers'],
             )
             if not self._direction_is_usable(direction):
                 raise ValueError(
@@ -156,6 +169,24 @@ class Orchestrator(BaseAgent):
                                   "queries": direction.get("search_queries", [])[:5]},
                                  elapsed_ms=int((t1-t0)*1000))
 
+            inherited_paper_ids = []
+            if direction.get('context_recovered'):
+                available = snapshot['paper_ids']
+                focused = [pid for pid in direction.get('context_paper_ids',[]) if pid in available]
+                inherited_paper_ids = focused or available
+                await self._progress(session_id,'DirectionParser','context_recovered',
+                    f'已接续本会话，恢复 {len(inherited_paper_ids)} 篇已有论文供本轮核对',
+                    {'inherited_paper_ids':inherited_paper_ids})
+
+            if direction['research_plan'].get('adaptive'):
+                from src.analysis.adaptive_research import execute_research, deliver_research
+                ctx = ctx.model_copy(update={'session_id':session_id})
+                papers, innovations, analysis, pd = await execute_research(
+                    self, ctx, direction, list(dict.fromkeys(selected_paper_ids+inherited_paper_ids)))
+                analysis['inherited_paper_ids'] = inherited_paper_ids
+                return await deliver_research(self, ctx, direction, papers, innovations, analysis, pd,
+                                              selected_paper_ids,user_message_id)
+
             # Step 2: Search
             run2 = await self._create_agent_run(session_id, "SearchAgent", {
                 "direction": direction,
@@ -165,7 +196,6 @@ class Orchestrator(BaseAgent):
                                  "开始搜索论文",
                                  {"queries": direction.get("search_queries", [])[:5],
                                   "selected_papers": len(selected_paper_ids)})
-            inherited_paper_ids = self._session_paper_ids(session_id)
             research_paper_ids = list(dict.fromkeys(selected_paper_ids + inherited_paper_ids))
             papers = await self._search(user_message, direction, ctx.config, research_paper_ids)
             await self._finish_agent_run(run2, "SearchAgent", session_id,
@@ -186,7 +216,7 @@ class Orchestrator(BaseAgent):
             # Step 3: Parse
             run3 = await self._create_agent_run(session_id, "ParseAgent",
                                                  {"paper_count": len(papers)})
-            top_k = self._parse_budget(papers, ctx.config.get("search", {}).get("deep_parse_top_k", 50), ctx.config)
+            top_k = self._parse_budget(papers, ctx.config.get("search", {}).get("deep_parse_top_k", 60), ctx.config)
             await self._progress(session_id, "ParseAgent", "parse_started",
                                  f"本轮共 {len(papers)} 篇资料，尝试获取/解析其中 {min(top_k, len(papers))} 篇全文；其余逐篇列为待处理")
             from src.agents.parse_agent import ParseAgent
@@ -419,26 +449,57 @@ class Orchestrator(BaseAgent):
             )
             return AgentResult(status="failed", error=str(e))
 
-    def _session_paper_ids(self, session_id: str) -> list[str]:
-        row = self.db.fetchone(
-            "SELECT search_log_json FROM gap_analyses WHERE session_id=? AND id NOT LIKE 'checkpoint_%' ORDER BY created_at DESC, rowid DESC LIMIT 1",
-            (session_id,),
-        ) if self.db and session_id else None
-        try:
-            data = json.loads((row or {}).get('search_log_json') or '{}')
-            return list(dict.fromkeys(p['id'] for p in data.get('papers', []) if isinstance(p,dict) and isinstance(p.get('id'),str)))
-        except (TypeError, ValueError, AttributeError):
-            return []
+    def _research_history_rows(self, session_id: str, before_message_id: str = '') -> list[dict]:
+        if not self.db or not session_id:return []
+        anchor=self.db.fetchone('SELECT created_at FROM messages WHERE session_id=? AND id=?',
+                                (session_id,before_message_id)) if before_message_id else None
+        boundary=' AND created_at<=?' if anchor else ''
+        args=(session_id,anchor['created_at']) if anchor else (session_id,)
+        return self.db.fetchall("SELECT direction,search_log_json,gaps_json FROM gap_analyses WHERE session_id=? AND id NOT LIKE 'checkpoint_%'"
+                                +boundary+' ORDER BY created_at DESC, rowid DESC LIMIT 8',args)
 
-    def _latest_session_direction(self, session_id: str) -> dict:
+    @staticmethod
+    def _history_json(value, fallback):
+        try:
+            decoded=json.loads(value) if isinstance(value,str) else value
+            return decoded if isinstance(decoded,type(fallback)) else fallback
+        except (TypeError,ValueError):return fallback
+
+    def _session_paper_ids(self, session_id: str, before_message_id: str = '') -> list[str]:
+        # A zero-source failed follow-up must not hide the last usable corpus.
+        from src.analysis.session_sources import research_paper_ids
+        return research_paper_ids(self.db,session_id,before_message_id)
+
+    def _conversation_snapshot(self, session_id: str, message_id: str, message: str) -> dict:
+        current=self.db.fetchone('SELECT metadata_json FROM messages WHERE session_id=? AND id=?',
+                                 (session_id,message_id))
+        saved=self._history_json((current or {}).get('metadata_json'),{}).get('context_snapshot')
+        if (isinstance(saved,dict) and saved.get('version')==1 and saved.get('session_id')==session_id
+                and saved.get('message')==message and isinstance(saved.get('previous_direction'),dict)
+                and isinstance(saved.get('recent_context'),str) and isinstance(saved.get('paper_ids'),list)):
+            return saved
+        previous=self._latest_session_direction(session_id,before_message_id=message_id)
+        from src.parsing.schemas import DirectionParseResult
+        previous=DirectionParseResult(**previous).model_dump() if previous else {}
+        recent=self._recent_direction_context(session_id,exclude_message_id=message_id)
+        research=self._latest_research_context(session_id,before_message_id=message_id)
+        from src.analysis.session_sources import attachment_paper_ids
+        attachments=attachment_paper_ids(self.db,session_id,message_id)
+        ids=list(dict.fromkeys(attachments+self._session_paper_ids(session_id,message_id)))[:100]
+        papers=self._selected_papers(ids)
+        ids=[paper['id'] for paper in papers]
+        catalog=[{'id':p['id'],'title':str(p.get('title') or '')[:220],
+                  'has_fulltext_path':bool(p.get('parsed_markdown_path') or p.get('fulltext_path'))} for p in papers]
+        parts=[part for part in (research,'同一会话最近消息（含讨论模式，历史回答需重新核验）：\n'+recent if recent else '',
+                '同一会话已用/上传论文（仅恢复引用，不把历史回答当论文证据）：\n'+json.dumps(catalog,ensure_ascii=False) if catalog else '') if part]
+        return {'version':1,'session_id':session_id,'message':message,'previous_direction':previous,
+                'recent_context':'\n\n'.join(parts),'paper_ids':ids}
+
+    def _latest_session_direction(self, session_id: str, before_message_id: str = '') -> dict:
         if not self.db or not session_id:
             return {}
-        row = self.db.fetchone(
-            """SELECT direction FROM gap_analyses
-               WHERE session_id=? AND id NOT LIKE 'checkpoint_%'
-               ORDER BY created_at DESC, rowid DESC LIMIT 1""",
-            (session_id,),
-        )
+        rows=self._research_history_rows(session_id,before_message_id)
+        row=rows[0] if rows else None
         if not row or not row.get("direction"):
             return {}
         value = row.get("direction")
@@ -450,14 +511,12 @@ class Orchestrator(BaseAgent):
         except (TypeError, json.JSONDecodeError):
             return {}
 
-    def _latest_research_context(self, session_id: str) -> str:
+    def _latest_research_context(self, session_id: str, before_message_id: str = '') -> str:
         """Expose structured candidate history that would be lost by report-prefix clipping."""
         if not self.db or not session_id:
             return ""
-        row = self.db.fetchone(
-            "SELECT gaps_json, search_log_json FROM gap_analyses WHERE session_id=? "
-            "AND id NOT LIKE 'checkpoint_%' ORDER BY created_at DESC, rowid DESC LIMIT 1", (session_id,)
-        )
+        rows=self._research_history_rows(session_id,before_message_id)
+        row=rows[0] if rows else None
         if not row:
             return ""
         try:
@@ -480,21 +539,22 @@ class Orchestrator(BaseAgent):
 
     def _recent_direction_context(self, session_id: str,
                                   exclude_message_id: str = "",
-                                  limit: int = 8,
-                                  max_chars: int = 6000) -> str:
+                                  limit: int = 16,
+                                  max_chars: int = 16000) -> str:
         if not self.db or not session_id:
             return ""
-        rows = self.db.fetchall(
-            """SELECT role, content FROM messages
-               WHERE session_id=? AND id<>?
-               ORDER BY rowid DESC LIMIT ?""",
-            (session_id, exclude_message_id, limit),
-        )
+        anchor=self.db.fetchone('SELECT rowid AS seq FROM messages WHERE session_id=? AND id=?',
+                                (session_id,exclude_message_id)) if exclude_message_id else None
+        condition=' AND rowid<?' if anchor else ''
+        args=(session_id,anchor['seq'],limit) if anchor else (session_id,limit)
+        rows=self.db.fetchall('SELECT role,content FROM messages WHERE session_id=?'+condition+
+                              ' ORDER BY rowid DESC LIMIT ?',args)
         parts = []
         total = 0
-        for row in reversed(rows):
+        for row in rows:
             role = row.get("role") or "unknown"
-            content = " ".join(str(row.get("content") or "").split())[:1200]
+            raw=str(row.get('content') or '').strip()
+            content=raw if len(raw)<=4000 else raw[:2800]+'\n[历史长消息中间省略]\n'+raw[-1200:]
             if not content:
                 continue
             line = f"{role}: {content}"
@@ -503,16 +563,7 @@ class Orchestrator(BaseAgent):
                 break
             parts.append(line[:remaining])
             total += len(parts[-1])
-        return "\n".join(parts)
-
-    def _is_follow_up_request(self, message: str) -> bool:
-        text = " ".join(str(message or "").lower().split())
-        markers = (
-            "之前", "上次", "前面", "刚才", "原来", "原报告", "已有报告",
-            "继续", "重新", "再生成", "再分析", "按照对话", "基于对话",
-            "previous", "earlier", "above", "continue", "again", "regenerate",
-        )
-        return any(marker in text for marker in markers)
+        return "\n".join(reversed(parts))
 
     def _query_has_research_focus(self, query: str) -> bool:
         text = " ".join(str(query or "").lower().split())
@@ -546,14 +597,29 @@ class Orchestrator(BaseAgent):
 
     async def _parse_direction(self, message: str,
                                previous_direction: dict | None = None,
-                               recent_context: str = "") -> dict:
+                               recent_context: str = "",
+                               selected_papers: list[dict] | None = None) -> dict:
         from src.parsing.schemas import DirectionParseResult
         previous_direction = DirectionParseResult(**(previous_direction or {})).model_dump() if previous_direction else {}
-        follow_up = self._is_follow_up_request(message)
+        has_history = bool(previous_direction or recent_context)
         result = await self.llm.chat_json([
             {"role": "system",
              "content": (
                  "你是论文研究方向解析助手。拆解研究想法为结构化字段。只输出合法JSON。"
+                 "首先决定如何回答用户问题，必须给research_plan对象：task_type（gap_discovery/benchmark_comparison/"
+                 "literature_review/claim_verification/question_answer），objective，extraction_fields字符串数组，"
+                 "success_criteria字符串数组，report_sections字符串数组，adaptive:true。"
+                 "问多少/最低/性能排行是数值比较，不是研究空白；综述、事实核查也不生成候选空白。"
+                 "comparison包含dataset,metric,lower_is_better,groups字符串数组,group_criteria,training_setting,protocol_constraints。"
+                 "comparison_mode默认reported_results，即像论文综述或审稿对比一样排列各论文原文报告的成绩，并说明配置差异。"
+                 "只有用户明确要求严格相同条件、控制变量或受控复现比较时才选controlled_comparison。"
+                 "问最低EPE、排名或修订报告不等于要求完全一致的预训练数据、分辨率、Dmax、迭代和硬件；"
+                 "这些差异记录在说明中，不加成success_criteria的交付门槛，也不从旧助手建议继承。"
+                 "如果用户明确要求全部模型或不限发表年份，comparison.all_time_groups列出对应groups的准确名称；"
+                 "近期检索与全部模型比较是两个范围，旧基线应追查原论文，不把成绩归给引用它的新论文。"
+                 "用户未定义实时阈值时在assumptions中说明按论文自身定位分组，勿自创阈值。"
+                 "time_scope包含start/end的YYYY-MM-DD；按当前日期理解最近一年/两年，不使用知识截止年份。"
+                 "没有时间要求时time_scope={}。objective保留实际提问。"
                  "必须输出对象，字段包括 research_question, research_domain, target_task, "
                  "method_component, method_category, method_subcategory, "
                  "implementation_details, claims_to_verify, search_queries, matrix_axes_hint。"
@@ -569,6 +635,21 @@ class Orchestrator(BaseAgent):
                  "用户提出相邻领域的新机制时，应保留其来源领域检索，并明确迁移到目标任务时需要核查的差异。"
                  "当前输入可能是对上一轮分析的跟进请求。此时必须利用提供的上一轮结构化方向和会话上下文恢复研究需求，"
                  "不能把‘重新生成报告’、‘按照之前对话’这类操作性句子直接当作检索词。"
+                 "先输出 context_relation:continue/new_topic：结合完整语义判断是否接续本会话，不靠‘继续、之前’等关键词。"
+                 "‘包含啊、你自己看一下、这两篇、那就核对一下’等短句要从最近用户与助手对话、报告和论文引用恢复所指对象。"
+                 "历史助手回答可能错误，用户可以正在纠正它；不要把助手声称‘没有表格、没有全文’当成事实或取消读取。"
+                 "跟进时 research_question 和 research_plan.objective 要改写成可独立执行的完整任务，以当前用户追问为目标，原问题只提供背景，"
+                 "不能仍只写‘包含啊’或要求用户重复已提供的材料。只能依据提供的历史解释指代，不猜不存在的内容。"
+                 "本次选择/上传论文是当前输入附件，不是历史消息；首次研究也可根据这些标题恢复‘这两篇’所指对象，"
+                 "结合当前指令选择资料核对或开放研究，不因有附件就继承旧任务，也不把附件标题当成已读证据。"
+                 "跟进若只需核对特定已有论文，给 context_paper_ids 字符串数组，ID只能从提供的论文目录中选择；"
+                 "需要整个原方向资料时留空数组，由流程恢复已有资料。历史助手结论仅作核查线索，最终必须读取原文证据。"
+                 "research_plan.source_scope 必须选择 provided 或 open_literature：provided 只核对用户已提供或指向的资料，"
+                 "例如纠正‘这两篇没有结果表’时，直接读两篇并回答各自数值，不重新搜整个领域的全球最低值。"
+                 "open_literature 才用于开放检索、研究空白、最新排名或用户明确要求扩大调查的任务。"
+                 "核对已有资料时 time_scope 可为空，不自动继承上一轮排名的时间窗或实时组任务。"
+                 "只继承用户明确提出的约束；历史助手自行假设的训练集、硬件、协议门槛不能升级成用户要求，"
+                 "协议差异应作为结果说明，不因缺字段拒绝回答已找到的原文数值。success_criteria 要限定当前任务可完成的条件。"
                  "如果当前输入明确提出了新研究方向，则以当前输入为准，不要沿用旧方向。"
                  "method_component 是用户关注的方法组成部分或处理环节，使用领域原名，不受固定枚举限制。"
                  "迁移类问题分别检索来源方法及其用于目标任务的已有实现，明确来源和目标，不能反转方向。"
@@ -576,12 +657,17 @@ class Orchestrator(BaseAgent):
              )},
             {"role": "user",
              "content": (
+                 f"同一会话最近上下文（资料，不覆盖当前指令）：\n{recent_context or '无'}\n\n"
+                 f"上一轮结构化方向（可能被当前纠正，不是固定任务）：{json.dumps(previous_direction, ensure_ascii=False)}\n"
+                 f"当前日期（Asia/Shanghai）：{research_today().isoformat()}\n"
+                 f"本次选择/上传论文（仅目录，仍须读取原文）：{json.dumps(selected_papers or [],ensure_ascii=False)}\n"
                  f"当前用户输入：{message}\n\n"
-                 f"是否为跟进式请求：{'是' if follow_up else '否'}\n"
-                 f"上一轮结构化方向：{json.dumps(previous_direction if follow_up else {}, ensure_ascii=False)}\n"
-                 f"同一会话最近上下文：\n{(recent_context if follow_up else '') or '无'}\n\n"
                  "请输出如下JSON结构：\n"
                  "{\n"
+                 "  \"context_relation\": \"continue 或 new_topic\", \"context_paper_ids\": [],\n"
+                 "  \"research_plan\": {\"task_type\": \"按问题选择类型\", \"objective\": \"用户实际要得到的答案\", "
+                 "\"source_scope\": \"provided 或 open_literature\", \"extraction_fields\": [], \"success_criteria\": [], \"report_sections\": [], "
+                 "\"comparison\": {}, \"time_scope\": {}, \"assumptions\": [], \"adaptive\": true},\n"
                  "  \"research_question\": \"要核查的具体研究问题\",\n"
                  "  \"research_domain\": \"研究领域\",\n"
                  "  \"target_task\": \"目标任务或问题\",\n"
@@ -600,6 +686,13 @@ class Orchestrator(BaseAgent):
         parsed = DirectionParseResult(
             **(result if isinstance(result, dict) else {})
         ).model_dump()
+        relation=result.get('context_relation') if isinstance(result,dict) else None
+        # Older compatible models may omit the new field. Keep supplied session
+        # history available; a fresh conversation remains the explicit reset.
+        follow_up=has_history and relation!='new_topic'
+        parsed['context_relation']='continue' if follow_up else 'new_topic'
+        requested_ids=(result.get('context_paper_ids') or []) if isinstance(result,dict) else []
+        parsed['context_paper_ids']=list(dict.fromkeys(pid for pid in requested_ids if isinstance(pid,str)))[:100] if isinstance(requested_ids,list) and follow_up else []
         recovered = False
         if follow_up and previous_direction:
             for key in (
@@ -621,11 +714,34 @@ class Orchestrator(BaseAgent):
         if not parsed.get("research_question") and self._direction_is_usable(parsed):
             parsed["research_question"] = message
         parsed["user_request"] = message
+        raw_plan=(result or {}).get('research_plan') if isinstance(result,dict) else {}
+        if follow_up and previous_direction and not raw_plan:
+            raw_plan=previous_direction.get('research_plan')
+        raw_plan=dict(raw_plan) if isinstance(raw_plan,dict) else {}
+        if follow_up and parsed['context_paper_ids'] and raw_plan.get('task_type')=='claim_verification' and 'source_scope' not in raw_plan:
+            # Compatibility for models predating source_scope: focused fact checks
+            # must not silently restart the previous literature ranking.
+            raw_plan['source_scope']='provided'
+        parsed['research_plan']=normalize_plan(raw_plan,message if not follow_up else parsed.get('research_question') or message)
+        previous_scope=previous_direction.get('research_plan',{}).get('time_scope') or {}
+        if follow_up and previous_scope and 'time_scope' not in raw_plan and parsed['research_plan']['source_scope']!='provided' and not re.search(r'最近|过去|近[一二两\d]|last|past|(?:19|20)\d{2}',message,re.I):
+            parsed['research_plan']['time_scope']=dict(previous_scope)
+        if raw_plan:
+            parsed['research_plan']['adaptive']=True
+        scope=parsed['research_plan']['time_scope']
+        if scope.get('resolved_at'):
+            if not follow_up:
+                parsed['research_question']=message
+            parsed['research_question']+=f"（时间窗：{scope['start']} 至 {scope['end']}）"
+            if not re.search(r'\b(?:19|20)\d{2}\b',message):
+                parsed['search_queries']=[' '.join(re.sub(r'\b(?:19|20)\d{2}\b','',q).split()) for q in parsed['search_queries']]
         if not follow_up:
             parsed['claims_to_verify'] = [claim for claim in parsed.get('claims_to_verify',[]) if claim in message]
         # Mechanism descriptions are research scope, not assertions of novelty.
         if recovered:
             parsed["context_recovered"] = True
+        if follow_up:
+            parsed['context_recovered']=True
         return parsed
 
     async def _search(self, message: str, direction: dict,
@@ -647,7 +763,7 @@ class Orchestrator(BaseAgent):
         # Check local KB first
         for q in queries[:3]:
             try:
-                local = await self.kb.search_related(q, 10)
+                local = await self.kb.search_related(q, max(20,min(100,int(config.get('research',{}).get('max_new_papers',60))*2)))
                 db_papers = []
                 for item in local:
                     p = item.get("paper") or item.get("paper_meta", {})
@@ -655,6 +771,8 @@ class Orchestrator(BaseAgent):
                         # A previous direction's off-topic label is not a global exclusion.
                         db_papers.append({
                             "id": p.get("id"), "title": p.get("title", ""),
+                            "year":p.get('year'), "publication_date":p.get('publication_date'),
+                            "date_source":p.get('date_source'),
                             "abstract": p.get("abstract", ""),
                             "source": "local_kb", "retrieval_status": p.get("retrieval_status") or "metadata_only",
                             "doi": p.get("doi"), "arxiv_id": p.get("arxiv_id"),
@@ -682,17 +800,17 @@ class Orchestrator(BaseAgent):
                 enable_mcp=bool(search_cfg.get("enable_mcp") and mcp_cfg.get("enabled", True)),
                 enable_semantic_scholar=bool(search_cfg.get('enable_semantic_scholar',True)),
                 enable_arxiv=bool(search_cfg.get('enable_arxiv',True)),
+                time_scope=direction['research_plan'].get('time_scope') if direction.get('research_plan') else None,
             )
             all_papers.extend(results)
             direction['search_execution']['completed_queries'].append({'query': q, 'returned_records': len(results), 'sources':getattr(results,'diagnostics',[])})
         merged = await merge_and_deduplicate(all_papers)
         result = [self._hydrate_paper_from_db(m.model_dump()) for m in merged]
-        new_limit=max(0,min(100,int(config.get('research',{}).get('max_new_papers',30))))
+        result,excluded=scoped_papers(result,direction)
+        direction['search_execution']['excluded_by_date']=excluded
+        new_limit=max(0,min(100,int(config.get('research',{}).get('max_new_papers',60))))
         retained=[p for p in result if p.get('id') in selected_id_set]
         additions=[p for p in result if p.get('id') not in selected_id_set]
-        result=retained+additions[:new_limit]
-        direction['search_execution']['new_papers']=len(additions[:new_limit])
-        direction['search_execution']['deferred_new_records']=max(0,len(additions)-new_limit)
         # Relevance scoring with LLM
         if len(result) > 10:
             try:
@@ -703,7 +821,7 @@ class Orchestrator(BaseAgent):
                 ], ensure_ascii=False)
                 ranking = await self.llm.chat_json([
                     {"role": "system",
-                     "content": "你是研究空白核查助手。按当前研究问题对论文相关性打分。只输出JSON。"},
+                     "content": "按当前用户问题对论文相关性打分，relevance_score为0到1，完全无关为0，另给is_relevant布尔值。数值查询优先同任务、同指标和同时间窗的论文；相邻任务不能因关键词相同排前。只输出JSON。"},
                     {"role": "user",
                      "content": f"方向：{json.dumps(direction)}\n论文：{snippet}\n输出 ranked_papers: [{{paper_id, relevance_score, reason}}]"},
                 ])
@@ -711,14 +829,26 @@ class Orchestrator(BaseAgent):
                 ranked = ranking.get("ranked_papers", [])
                 if ranked:
                     score_map = {}
+                    irrelevant=set()
                     for r in ranked:
                         pid = r.get("paper_id") or r.get("id") or ""
                         if pid:
-                            score_map[pid] = r.get("relevance_score", 0)
+                            score_map[pid] = float(r.get("relevance_score") or 0)
+                            if r.get('is_relevant') is False or score_map[pid]<=0:irrelevant.add(pid)
                     if score_map:
+                        direction['search_execution']['excluded_by_relevance']=[p['id'] for p in result if p['id'] in irrelevant and p['id'] not in selected_id_set]
+                        result=[p for p in result if p['id'] not in irrelevant or p['id'] in selected_id_set]
+                        for p in result:
+                            if p['id'] in score_map:p['relevance_score']=score_map[p['id']]
                         result.sort(key=lambda p: score_map.get(p.get("id", ""), 0), reverse=True)
             except Exception as e:
                 logger.warning(f"Relevance scoring failed: {e}")
+        retained=[p for p in result if p.get('id') in selected_id_set]
+        additions=[p for p in result if p.get('id') not in selected_id_set]
+        additions.sort(key=lambda p:p.get('temporal_status')=='date_unconfirmed')
+        result=retained+additions[:new_limit]
+        direction['search_execution']['new_papers']=len(additions[:new_limit])
+        direction['search_execution']['deferred_new_records']=max(0,len(additions)-new_limit)
         if selected_id_set:
             selected_order = {pid: i for i, pid in enumerate(selected_paper_ids)}
             result.sort(key=lambda p: selected_order.get(p.get("id", ""), len(selected_order)))
@@ -728,7 +858,7 @@ class Orchestrator(BaseAgent):
         try:
             configured_top_k = int(configured_top_k)
         except Exception:
-            configured_top_k = 50
+            configured_top_k = 60
         # The visible setting is authoritative. Old hidden v0 caps must not override it.
         return max(0, min(len(papers), configured_top_k, 100))
 
@@ -757,6 +887,8 @@ class Orchestrator(BaseAgent):
                 "title": row.get("title", ""),
                 "authors": authors if isinstance(authors, list) else [],
                 "year": row.get("year"),
+                "publication_date": row.get("publication_date"),
+                "date_source": row.get("date_source"),
                 "venue": row.get("venue"),
                 "doi": row.get("doi"),
                 "arxiv_id": row.get("arxiv_id"),
@@ -769,6 +901,8 @@ class Orchestrator(BaseAgent):
                 "is_user_selected": True,
                 "retrieval_status": row.get("retrieval_status") or "metadata_only",
                 "local_pdf_path": row.get("fulltext_path"),
+                "fulltext_path": row.get("fulltext_path"),
+                "parsed_markdown_path": row.get("parsed_markdown_path"),
             })
         return papers
 
@@ -797,7 +931,7 @@ class Orchestrator(BaseAgent):
             return paper
         hydrated = dict(paper)
         hydrated["id"] = row.get("id") or hydrated.get("id")
-        for key in ("title", "abstract", "venue", "doi", "arxiv_id", "semantic_scholar_id", "url", "open_access_pdf_url"):
+        for key in ("title", "abstract", "venue", "doi", "arxiv_id", "semantic_scholar_id", "url", "open_access_pdf_url", "publication_date", "date_source"):
             if not hydrated.get(key) and row.get(key):
                 hydrated[key] = row.get(key)
         if row.get("year") and not hydrated.get("year"):
@@ -845,12 +979,17 @@ class Orchestrator(BaseAgent):
 
 
     async def _extract_innovations(self, ctx, parse_result,
-                                   papers: list[dict] | None = None) -> list[dict]:
+                                   papers: list[dict] | None = None, direction: dict | None = None) -> list[dict]:
+        if direction and direction.get('research_plan',{}).get('task_type')!='gap_discovery':
+            from src.analysis.question_evidence import extract_question_profiles
+            return await extract_question_profiles(self,ctx,parse_result,papers,direction)
         from src.parsing.innovation_extractor import InnovationExtractor
         extractor = InnovationExtractor(self.llm)
-        profiles = []
+        from src.runtime.parallel import ordered_map
+        from src.runtime.research_limits import research_limits
+        from src.llm.request_context import model_context
 
-        for pid in parse_result.data.get("parsed", []):
+        async def read_fulltext(pid):
             import re
             parsed_dir = ctx.workspace_root / "papers" / "parsed" / re.sub(r'[^A-Za-z0-9._-]+','_',pid)
             md_path = parsed_dir / "full.md"
@@ -869,33 +1008,48 @@ class Orchestrator(BaseAgent):
             if md_path.exists():
                 paper = self.db.fetchone("SELECT * FROM papers WHERE id=?", (pid,))
                 if paper:
-                    cached = self._verified_cached_profile(pid, md_path.read_text(encoding='utf-8'))
-                    if cached:
-                        profiles.append(self._enrich_profile_metadata(cached, paper))
+                    text=md_path.read_text(encoding='utf-8')
+                    from src.llm.context_budget import prepare_reading
+                    query=(direction or {}).get('research_plan',{}).get('objective') or (direction or {}).get('raw_input') or paper.get('title','')
+                    reading_text,reading_info=await prepare_reading(self,ctx,dict(paper),text,str(md_path),query)
+                    cached = self._verified_cached_profile(pid, text)
+                    cached_reading = (cached or {}).get('reading_input', {})
+                    same_reading = cached_reading.get('input_complete') == reading_info['input_complete'] and (
+                        reading_info['input_complete'] or cached_reading.get('source_spans') == reading_info['source_spans'])
+                    if cached and same_reading:
                         await self._progress(ctx.session_id,'InnovationExtractor','paper_cached',f"已核对原文，复用证据：{paper.get('title') or pid}")
-                        continue
+                        return self._enrich_profile_metadata(cached, paper)
                     await self._progress(ctx.session_id,'InnovationExtractor','paper_extract_started',f"正在提取：{paper.get('title') or pid}",{'paper_id':pid,'source':'fulltext'})
-                    p = self._normalize_profile(await extractor.extract_from_markdown(pid, dict(paper), md_path), pid)
+                    with model_context(agent='InnovationExtractor', item_label=paper.get('title') or pid, paper_id=pid):
+                        p = self._normalize_profile(await extractor.extract_from_markdown(pid, dict(paper), md_path, content=reading_text), pid)
+                    p['reading_input']=reading_info
                     p["has_fulltext"] = True
                     p["paper_id"] = pid
                     p = self._enrich_profile_metadata(p, paper)
-                    profiles.append(p)
                     await self._progress(ctx.session_id,'InnovationExtractor','paper_extract_completed',f"{'提取失败' if p.get('error') else '提取完成'}：{paper.get('title') or pid}",{'paper_id':pid,'error':p.get('error'),'evidence_count':len(p.get('evidence',[]))})
+                    return p
 
-        for pid in parse_result.data.get("metadata_only", []):
+        async def read_abstract(pid):
             paper = self.db.fetchone("SELECT * FROM papers WHERE id=?", (pid,))
             if paper:
                 cached = self._verified_cached_profile(pid, paper.get('abstract') or '')
                 if cached:
-                    profiles.append(self._enrich_profile_metadata(cached, paper))
-                    continue
+                    return self._enrich_profile_metadata(cached, paper)
                 await self._progress(ctx.session_id,'InnovationExtractor','paper_extract_started',f"正在提取摘要：{paper.get('title') or pid}",{'paper_id':pid,'source':'abstract'})
-                p = self._normalize_profile(await extractor.extract_from_abstract(pid, dict(paper)), pid)
+                with model_context(agent='InnovationExtractor', item_label=paper.get('title') or pid, paper_id=pid):
+                    p = self._normalize_profile(await extractor.extract_from_abstract(pid, dict(paper)), pid)
                 p["has_fulltext"] = False
                 p["paper_id"] = pid
                 p = self._enrich_profile_metadata(p, paper)
-                profiles.append(p)
                 await self._progress(ctx.session_id,'InnovationExtractor','paper_extract_completed',f"{'提取失败' if p.get('error') else '摘要提取完成'}：{paper.get('title') or pid}",{'paper_id':pid,'error':p.get('error'),'evidence_count':len(p.get('evidence',[]))})
+                return p
+
+        work = [(pid, True) for pid in parse_result.data.get('parsed', [])]
+        work += [(pid, False) for pid in parse_result.data.get('metadata_only', [])]
+        async def read_one(item):
+            pid, fulltext = item
+            return await (read_fulltext(pid) if fulltext else read_abstract(pid))
+        profiles = [p for p in await ordered_map(work, read_one, research_limits(ctx.config)['parallel_papers']) if p is not None]
 
         # The parse budget can be smaller than the current evidence set. Reuse
         # previously extracted profiles for papers that are in this run rather
@@ -1531,7 +1685,8 @@ class Orchestrator(BaseAgent):
         report_title = str(direction.get('user_request') or direction.get('research_question') or title_hint or '研究空白分析').strip()[:100]
         report_slug = "_".join(slug_parts[:3])[:60] if slug_parts else ""
         report_id = uuid.uuid4().hex[:12]
-        filename = f"gap_analysis_{ts}_{report_id}_{report_slug}.md" if report_slug else f"gap_analysis_{ts}_{report_id}.md"
+        prefix='gap_analysis' if direction.get('research_plan',{}).get('task_type','gap_discovery')=='gap_discovery' else 'research_report'
+        filename = f"{prefix}_{ts}_{report_id}_{report_slug}.md" if report_slug else f"{prefix}_{ts}_{report_id}.md"
         report_path = reports_dir / filename
 
         if analysis.get('reader_report'):
@@ -2012,6 +2167,11 @@ class Orchestrator(BaseAgent):
                 "selected_paper_ids": selected_ids,
                 "inherited_paper_ids": analysis.get('inherited_paper_ids', []),
                 "paper_processing": analysis.get('paper_processing', []),
+                "task_type":analysis.get('task_type'),
+                "answers":analysis.get('answers',[]),
+                "benchmark_summary":analysis.get('benchmark_summary',[]),
+                "benchmark_table":analysis.get('benchmark_table',[]),
+                "missing_information":analysis.get('missing_information',[]),
                 "selection_provenance": {
                     "explicitly_selected_this_request": len(selected_ids),
                     "retrieved_from_selected_library": source_counts.get("selected_library", 0),

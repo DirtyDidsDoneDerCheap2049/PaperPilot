@@ -1,5 +1,4 @@
 import asyncio, json, logging, subprocess
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

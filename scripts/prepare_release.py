@@ -11,9 +11,16 @@ ROOT=Path(__file__).resolve().parents[1]
 TREES=('src','native','tests','.github','docs/assets')
 FILES=('README.md','README.en.md','LICENSE','THIRD_PARTY.md','.gitignore','requirements.txt',
        'requirements-dev.txt','requirements-vector.txt','requirements-lock-windows-py312.txt',
-       'scripts/build_native.py','scripts/build_desktop.py','scripts/create_icon.py','scripts/prepare_release.py','scripts/refresh_release.py',
+       'scripts/build_native.py','scripts/build_desktop.py','scripts/update_local_desktop.py','scripts/create_icon.py','scripts/prepare_release.py','scripts/refresh_release.py',
        'scripts/backup_workspace.py','scripts/migrate_mysql.py','scripts/backup_mysql.py','scripts/rewrite_latest_report.py',
-       'pytest.ini','docs/MYSQL.md','docs/ARCHITECTURE.md','docs/PRODUCT_PURPOSE.md','docs/DOMAIN_PROFILES.md','docs/WORKSPACE_GUIDE.md','docs/PUBLISHING.md','docs/RELEASE_NOTES.md','docs/MODEL_OUTPUT.md','docs/assets/readme/README.md')
+       'scripts/inspect_research_run.py','scripts/validate_adaptive_research.py',
+       'scripts/prepare_embedding_model.py','scripts/index_papers.py','scripts/benchmark_local_retrieval.py',
+       'scripts/benchmark_agent_runtime.py','scripts/benchmark_stream_ui.cjs','scripts/benchmark_stream_browser.cjs',
+       'scripts/capture_readme.py','scripts/capture_readme.cjs',
+       'docs/RUNTIME_PERFORMANCE.md','docs/releases/v0.2.0-preview.1.md',
+       'docs/FULLTEXT_RETRIEVAL.md','docs/LOCAL_RETRIEVAL_BENCHMARK.md',
+       'pytest.ini','docs/INDEX.md','docs/WORKSPACES.md','docs/RELEASE_CHECKS.md',
+       'docs/MYSQL.md','docs/ARCHITECTURE.md','docs/ADAPTIVE_RESEARCH.md','docs/LIBRARY_ORGANIZATION.md','docs/PRODUCT_PURPOSE.md','docs/DOMAIN_PROFILES.md','docs/WORKSPACE_GUIDE.md','docs/PUBLISHING.md','docs/RELEASE_NOTES.md','docs/MODEL_OUTPUT.md','docs/MODEL_COST.md','docs/assets/readme/README.md')
 SUFFIXES={'.py','.js','.cjs','.css','.html','.cpp','.h','.hpp','.txt','.md','.json','.yml','.yaml','.png','.svg'}
 PATTERNS=(re.compile(rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'),
           re.compile(rb'\bsk-[A-Za-z0-9_-]{24,}\b'),
@@ -58,6 +65,21 @@ def scan(files, root=ROOT):
     if failures:
         raise RuntimeError('Potential credential found in: '+', '.join(failures))
 
+def bundled_chroma_migration(path, folder):
+    """Allow only byte-identical SQL resources from the pinned dependency."""
+    from importlib.metadata import distribution, PackageNotFoundError
+    try:
+        relative=path.relative_to(folder)
+        if relative.parts[:3] != ('_internal','chromadb','migrations') or path.suffix.lower() != '.sql':return False
+        package=distribution('chromadb')
+        if package.version != '1.5.9':return False
+        resource=Path(*relative.parts[1:])
+        if resource.as_posix() not in {str(p).replace('\\','/') for p in package.files or []}:return False
+        original=Path(package.locate_file(resource))
+        return original.is_file() and not original.is_symlink() and path.read_bytes()==original.read_bytes()
+    except (OSError,ValueError,PackageNotFoundError):
+        return False
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--check-only',action='store_true')
@@ -70,7 +92,8 @@ def main():
         forbidden={'.env','.secrets.json','.database.json','.history-import.json','reader-workspace.json'}
         for p in files:
             if p.is_symlink() or not p.resolve().is_relative_to(folder):raise RuntimeError('Desktop file escapes package')
-            if p.name in forbidden or p.suffix.lower() in {'.db','.sqlite','.sqlite3','.pdf','.sql','.log'}:
+            private_suffix=p.suffix.lower() in {'.db','.sqlite','.sqlite3','.pdf','.sql','.log'}
+            if p.name in forbidden or (private_suffix and not bundled_chroma_migration(p,folder)):
                 raise RuntimeError('Private desktop file: '+str(p.relative_to(folder)))
         scan(files)
         print(f'Public desktop check passed: {len(files)} files')

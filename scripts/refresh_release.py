@@ -5,13 +5,15 @@ private desktop selectors are not copied into either public artifact.
 """
 import hashlib
 import json
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import zipfile
 
-from prepare_release import ROOT, scan, selected_files
+if __package__:
+    from .prepare_release import ROOT, scan, selected_files
+else:
+    from prepare_release import ROOT, scan, selected_files
 
 
 def sha(path):
@@ -26,6 +28,16 @@ def safe(base, relative):
     return path
 
 
+def matches_staging_hash(path,digest):
+    data=path.read_bytes()
+    if hashlib.sha256(data).hexdigest()==digest:return True
+    # Git's Windows checkout may convert LF to CRLF. Accept only an exact
+    # match after that single reversible conversion, never other text edits.
+    if path.suffix.lower() in {'.md','.py','.js','.cjs','.css','.html','.cpp','.h','.hpp','.txt','.json','.yml','.yaml'}:
+        return hashlib.sha256(data.replace(b'\r\n',b'\n')).hexdigest()==digest
+    return False
+
+
 def main():
     public = ROOT/'dist/public-source'
     desktop = ROOT/'dist/public-desktop/AIReader'
@@ -35,7 +47,7 @@ def main():
     if actual != set(old)|{'SOURCE_SHA256.json'}:
         raise RuntimeError('Public source contains unknown files; review them before refresh')
     for name, digest in old.items():
-        if sha(safe(public, name)) != digest:
+        if not matches_staging_hash(safe(public,name),digest):
             raise RuntimeError('Public source was edited: '+name)
     sources = list(selected_files())
     scan(sources)

@@ -36,6 +36,7 @@ def _coerce_string_list(value) -> list[str]:
 
 
 class DirectionParseResult(BaseModel):
+    research_plan: dict = Field(default_factory=dict)
     research_question: str = ""
     research_domain: str = ""
     target_task: str = ""

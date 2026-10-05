@@ -1,94 +1,87 @@
 <p align="center">
-  <img src="docs/assets/readme/cover.svg" alt="PaperPilot: an AI agent for investigating research gaps" width="100%">
+  <img src="docs/assets/readme/cover.svg" alt="PaperPilot: paper research and direction analysis" width="100%">
 </p>
 
 <p align="center">
   <a href="#download-and-start">Download and start</a> ·
-  <a href="docs/WORKSPACE_GUIDE.md">Workspace and backup</a> ·
+  <a href="docs/INDEX.md">Documentation</a> ·
   <a href="docs/ARCHITECTURE.md">Architecture</a> ·
   <a href="README.md">简体中文</a>
 </p>
 
-PaperPilot is a desktop agent for exploring research directions through paper search and analysis. Given a research question or implementation idea, it searches for relevant papers, attempts to retrieve their full text, and compares methods and evidence to identify prior work and differences worth testing. Research records stay in a local workspace.
+PaperPilot is a desktop paper agent for investigating research directions. Given a question or implementation idea, it searches and reads papers, then chooses further lookup, comparison or delivery based on the evidence. It supports benchmark comparisons, literature reviews, fact checks and research-gap exploration. Papers, discussions and reports stay in a local workspace.
 
-The current version is best suited to deep learning researchers.
+The current version is best suited to deep learning researchers. Fields share the same workflow and need no domain plugins; conclusion quality has not been evaluated separately across fields.
 
-Start with a question or import existing PDFs, then continue the same session as you add sources and ideas. The workspace keeps papers, evidence, reports and discussions. See the [project goals](docs/PRODUCT_PURPOSE.md).
+[![Start research, import papers and configure a model](docs/assets/readme/home.png)](docs/assets/readme/home.png)
 
-Research directions share the same workflow and require no domain plugins.
+Screenshots show the current local application with manually written example data. The process view replays saved events and does not demonstrate research quality. Click an image for the full-resolution view. The interface and technical guides are primarily in Chinese.
 
-[![The home page: start research, import papers and configure a model](docs/assets/readme/home.png)](docs/assets/readme/home.png)
+## Update draft
 
-Screenshots use manually written examples. The interface and linked technical guides are primarily in Chinese.
+The `v0.2.0-preview.1` draft adds question-driven research actions, incremental library organization, local full-text hybrid retrieval and report-only revisions. It also improves session/PDF continuity and streaming in the conversation. See the [release draft](docs/releases/v0.2.0-preview.1.md). This draft version has not been published; Releases lists the available versions.
 
 ## Download and start
 
-You can [run PaperPilot from source](#from-source). The Windows preview package is named `AIReader-windows-preview.zip`, with `AIReader.exe` as its launcher; a public download is not yet available.
+Packages are listed in [GitHub Releases](https://github.com/DirtyDidsDoneDerCheap2049/PaperPilot/releases). You can also [run from source](#from-source). The Windows package retains the filename `AIReader-windows-preview.zip` and launcher `AIReader.exe`; the application is named PaperPilot.
 
 1. Extract the complete `AIReader` folder and run `AIReader.exe`.
-2. Open **连接与设置** and provide an OpenAI Chat Completions-compatible endpoint, API key and model names.
-3. Enter a research question or implementation idea, then use **研究 Agent** to search prior work and investigate possible gaps. You can select or import papers as additional material.
+2. Open **连接与设置** and enter an OpenAI Chat Completions-compatible endpoint, API key and model ID.
+3. Enter a question and select **研究 Agent**. Import PDFs or select library papers to supply existing sources.
 
-The desktop package does not require Python, MySQL or a remote server. Windows WebView2 Runtime is required. Without a model key you can still inspect the interface and import PDFs.
+The desktop package needs Windows WebView2 Runtime. It does not require Python, MySQL, a backend server or a PaperPilot account. Without a model key, the interface and PDF import remain available.
 
-Model usage is billed by your provider. Start with a small paper set and configure a spending limit with that provider.
-
-Full-text downloads depend on source access and permissions. If a paper is unavailable, add the PDF yourself or continue with the available material; abstract-only analysis has a narrower scope.
+Full-text access depends on permissions and source availability. Upload a PDF when retrieval fails, or continue with available material; abstract-only evidence is identified in the report. Your configured provider bills model usage. Start with a small paper set and set a provider-side spending limit.
 
 ## Research workflow
 
-- Start from a concrete implementation idea and check what has already been done.
-- Keep retrieved papers and manually imported PDFs in one local library.
-- Compare methods, evidence and candidate differences, with references to the source text.
-- Search conversation history, copy or expand messages, and reopen an older report version.
-- Inspect task status, cancel a running task, or retry an interrupted task after checking its existing output.
-- Follow research progress in the conversation. Reading findings appear as they are produced, completed steps can be collapsed, and reasoning stays in a single-line preview outside the report. Saved progress returns after a refresh.
-- Read reports organized by conclusions, candidate research gaps, related work and the scope of the analysis. Each candidate states its difference from prior work; candidates with insufficient evidence are marked as unverified. Processing records are stored separately.
-- Filter missing full texts by the latest research turn or workspace, and export a review ZIP with Markdown, structured JSON and checksums. PDFs are not included automatically; review private content before sharing.
+- The Agent plans for the question, then selects search, source lookup, local retrieval, reading, analysis or delivery. It can investigate a gap, compare values, review literature or check specified papers. A check confined to supplied papers does not expand into an open literature search. See [research scheduling](docs/ADAPTIVE_RESEARCH.md).
+- Library organization generates categories, tags and summaries, with separate filters for temporal input, priors and training. Later runs reuse the taxonomy and unchanged results. Verified duplicates are folded without deleting files or historical references; organization can be undone. See [library organization](docs/LIBRARY_ORGANIZATION.md).
+- Local lexical and vector retrieval returns full-text sections, tables and source locations. The Agent uses this tool too; selected papers remain in the reading scope even when absent from the top-ranked hits. See [full-text retrieval](docs/FULLTEXT_RETRIEVAL.md).
+- Reading findings and report drafts stream directly into the conversation. Reasoning stays in a single-line preview outside the report. Saved events can be replayed after a refresh.
+- Reports lead with the answer, followed by evidence and limitations. Gap reports identify candidate differences; numeric reports show verified values and comparison conditions. Limited search cannot establish global records or novelty.
+- **讨论结果** answers from existing context, with excerpts from at most eight papers, without searching. Switching back to **研究 Agent** retains recent discussion and available attachments in the same session.
+- A request to shorten, rewrite or restructure a report uses that report and its saved analysis to create a revision, without rereading papers. Originals are retained. Requests for new evidence still use the research workflow. Report writing follows the bundled Naturawrite rules.
 
-**研究 Agent** adds sources and investigates candidate gaps or related directions. **讨论结果** answers from existing context, with excerpts from at most eight selected papers, without searching again or updating research conclusions. The same session retains its direction, papers and candidate context; start a new session for an independent direction.
+<p align="center"><a href="docs/assets/readme/library.png"><img src="docs/assets/readme/library.png" alt="Library organization, category filters, full-text search and paper selection" width="100%"></a></p>
 
-An evidence index connects research claims, method relationships and source references. Before generating a report, the agent searches and reads additional material relevant to candidate differences. When a query, paper or model-request limit is reached, the report lists the remaining evidence gaps. You can continue the research in the same session.
-
-<p align="center"><a href="docs/assets/readme/library.png"><img src="docs/assets/readme/library.png" alt="Example paper records and full-text status in the library" width="820"></a></p>
-
-Reports help identify material to read and ideas to test. Novelty still needs to be assessed against the source papers and experiments.
-
-[![Conversation history and research progress](docs/assets/readme/conversation.png)](docs/assets/readme/conversation.png)
+[![In-conversation research process and per-paper findings from saved events](docs/assets/readme/conversation.png)](docs/assets/readme/conversation.png)
 
 [![Report contents and evidence records](docs/assets/readme/report.png)](docs/assets/readme/report.png)
 
-Closing the application interrupts an active task. You can retry it after reopening, which may incur additional model charges; queued tasks continue to run. Draft messages stay in the current window when switching sessions and are discarded when the application closes.
+Direct discussion replies are expanded by default. Older research reports open their saved versions. Draft messages are kept per session in the current window and discarded when the application closes.
+
+Task records support inspection, cancellation and retry. Closing the application interrupts active work; a manual retry restarts the workflow and may incur additional charges. Queued tasks can continue on reopening.
+
+Missing-text records offer original-source links and title searches. Adding a PDF does not rewrite an old report; run research again in the same session. Review exports contain Markdown, JSON and checksums for the selected session, report or papers. PDFs are not included automatically. Review private content before sharing.
 
 ## Model configuration
 
-Enter the endpoint, API key and model ID in settings. Routine and analysis tasks can use the same model, with separate thinking effort, output budgets and request timeouts.
+PaperPilot supports OpenAI Chat Completions-compatible services. Model IDs, output-length parameters, JSON mode and provider options are configurable. Automatic mode sends DeepSeek-specific thinking parameters only to its official endpoint. Responses and native Anthropic protocols are not supported; provider compatibility needs practical verification.
 
-PaperPilot supports OpenAI Chat Completions-compatible services. You can configure the output-token parameter, JSON output mode and provider options manually. Automatic mode sends DeepSeek-specific thinking parameters only to its official endpoint. Manual configuration remains available when a service has no model-list endpoint. Responses and native Anthropic protocols are not supported.
+The official DeepSeek preset uses `deepseek-flash` and `max` thinking effort. The output budget is 65,536 tokens, including reasoning, with a 600-second timeout. Available IDs depend on the provider. Connection testing checks the model list without generating a response.
 
-For the official DeepSeek endpoint, the application prefills `deepseek-flash` and `max` thinking effort. Available model IDs depend on the provider. The default output budget is 65,536 tokens, including reasoning, with a 600-second request timeout. Connection testing checks the configured model against the service's model list without generating a response.
+New workspaces allow up to 60 full texts, 200 model requests and 120 minutes per task. Existing settings are retained. Concurrency, input capacity and database settings are configurable; database settings are under advanced options. See [usage and caching](docs/MODEL_COST.md).
 
-New workspaces allow up to 50 full texts, 200 model requests and 120 minutes per task. Existing workspaces retain their paper-limit setting. PDF parsing and vector search are optional; database settings are under the advanced options.
+<p align="center"><a href="docs/assets/readme/settings.png"><img src="docs/assets/readme/settings.png" alt="Model connection and advanced settings" width="560"></a></p>
 
 ## Data and privacy
 
-The default workspace is `%LOCALAPPDATA%/AIReader/workspace` and uses SQLite. The database, PDFs, reports and indexes stay in the workspace. Model requests send relevant paper text and conversation content to the provider you configure. Optional MinerU parsing and external vector search send data to their configured services.
+The default workspace is `%LOCALAPPDATA%/AIReader/workspace`. SQLite is the default; MySQL is optional and does not provide automatic cloud synchronization.
 
-Windows stores API keys encrypted with the current user's DPAPI. Reconfigure keys after moving to another Windows account or computer. Close PaperPilot before copying a complete workspace for backup. See the [workspace guide](docs/WORKSPACE_GUIDE.md) and [MySQL notes](docs/MYSQL.md).
+Local PDF extraction and full-text embeddings run on your computer without embedding API charges. Model analysis, organization, discussion and report revisions send relevant text to the configured provider. Optional MinerU parsing and external vector services send data to their configured endpoints.
 
-<p align="center"><a href="docs/assets/readme/settings.png"><img src="docs/assets/readme/settings.png" alt="Model connection settings and advanced options" width="560"></a></p>
+Windows encrypts API keys with the current user's DPAPI. Reconfigure keys after moving to another account or computer. Close PaperPilot before backing up the complete workspace; MySQL also needs a database snapshot. See the [workspace guide](docs/WORKSPACE_GUIDE.md) and [MySQL notes](docs/MYSQL.md).
 
 ## Architecture
 
-PaperPilot uses pywebview with a local FastAPI and WebSocket layer. A C++17 task kernel owns durable task state, idempotency checks, state transitions and workspace locking. A Python worker keeps the paper parsing, retrieval, model and evidence toolchain. JSON Lines connects the Python task service to the native kernel. SQLite is the default store; MySQL is optional for existing or explicitly configured workspaces.
+The desktop uses pywebview, local FastAPI, WebSocket and SSE interfaces. A C++17 kernel handles persistent tasks, idempotency, state transitions, attempt tokens and workspace locking. A Python worker runs the paper, model and evidence tools. JSON Lines connects TaskService to the kernel.
 
-Each workspace allows one PaperPilot instance and one research task at a time. Interrupted tasks require a manual retry, which restarts the workflow and can reuse existing paper profiles.
-
-See the [architecture](docs/ARCHITECTURE.md) for request handling, evidence checks and failure recovery.
+Full-text retrieval combines an ONNX multilingual embedding model, Chroma and SQLite FTS. One workspace allows one application instance and one research task at a time; independent paper operations within that task may run concurrently. See the [architecture](docs/ARCHITECTURE.md).
 
 ## From source
 
-On Windows PowerShell with Python 3.12:
+On Windows PowerShell with Python 3.12, run in the project directory:
 
 ```powershell
 python -m venv .venv
@@ -97,21 +90,27 @@ python -m venv .venv
 .venv/Scripts/python.exe -m src.app.desktop
 ```
 
-Run the offline checks with `pytest` and `node --test tests/test_conversation_ui.cjs`. Build the desktop folder with `scripts/build_desktop.py`. Source export and release instructions are in [PUBLISHING.md](docs/PUBLISHING.md).
+The native build uses Zig and verifies pinned dependencies. `scripts/prepare_embedding_model.py` prepares the local model; the desktop build bundles it.
 
-## Scope and limitations
+```powershell
+.venv/Scripts/python.exe -m src.app.desktop --workspace D:/ReaderData/research
+.venv/Scripts/python.exe -m pytest tests -q
+node --test tests/test_conversation_ui.cjs tests/test_live_ui.cjs
+.venv/Scripts/python.exe scripts/build_desktop.py
+.venv/Scripts/python.exe scripts/prepare_release.py --check-only
+```
 
-- Research directions share the [claim-and-evidence workflow](docs/DOMAIN_PROFILES.md). Conclusion quality has not been validated separately across fields.
-- Local PDF extraction has no OCR; scanned or complex PDFs may need an external parser.
-- Full-text retrieval depends on source access and permissions.
-- Full-text processing has a configurable limit of 0–100 papers. Papers beyond the limit remain pending. External parsing and vector services may charge separately.
-- Papers are processed sequentially, with evidence checks in batches of up to eight. Parallel subagent scheduling is not supported.
-- Extraction reads at most the first 60,000 characters of each paper. Long-document segmentation and on-demand rereading are not implemented. Follow-up research has round and request limits.
-- The desktop package does not include Chroma. External vector search requires optional dependencies installed from source; changing models requires rebuilding the corresponding index.
-- Database records and report files are not committed in a shared transaction. An interruption can leave partial results; check existing reports and messages before retrying.
-- There is no multi-user collaboration, automatic cross-device sync, cloud task execution or automatic updater.
-- The Windows preview package has not completed clean-system installation testing or code signing.
+The build outputs `dist/public-desktop/AIReader/`. See [directory conventions](docs/WORKSPACES.md) and [publishing](docs/PUBLISHING.md).
+
+## Limitations
+
+- Local extraction has no OCR. Scanned PDFs and complex tables may need another parser or manual verification.
+- Independent downloads, model reading and audit batches default to concurrency 3, configurable from 1 to 6. Local PDF parsing remains sequential. Planning, aggregate analysis and reporting follow their dependencies; there is no parallel subagent scheduler.
+- A full paper is read when it fits the input budget. Otherwise, relevant complete sections and tables are retrieved, with partial-reading and source-range metadata. Budgets are conservative estimates; receiving the text does not guarantee correct interpretation.
+- Initial indexing takes time and memory. Cold retrieval loading can briefly block status endpoints. See the [resource measurements](docs/LOCAL_RETRIEVAL_BENCHMARK.md).
+- Research records, report files and task state do not share a transaction. Inspect existing output after an interruption before retrying.
+- There is no multi-user collaboration, automatic cross-device sync, cloud task execution or automatic updater. Clean-system Windows installation and code signing remain unverified.
 
 ## License
 
-Source code is licensed under [AGPL-3.0-only](LICENSE). Third-party dependencies are listed in [THIRD_PARTY.md](THIRD_PARTY.md). Binary distributions must include corresponding source and build instructions. Imported papers and other third-party materials retain their original ownership and are not covered by the project's code license. See the [image notes](docs/assets/readme/README.md) for image sources.
+Source uses [AGPL-3.0-only](LICENSE). Dependency and model licenses are listed in [THIRD_PARTY.md](THIRD_PARTY.md). Binary distributions must include corresponding source and build instructions. Imported papers retain their original ownership and are not covered by the code license.
