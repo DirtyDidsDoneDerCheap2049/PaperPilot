@@ -11,13 +11,18 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
+      # Bootstrap with the hash published by the Python security team.
+      - run: python -m pip install "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
       - run: python -m pip install -r requirements-lock-windows-py312.txt
+      - run: python scripts/check_tls_trust.py
       - run: python scripts/build_native.py
       - run: python scripts/prepare_embedding_model.py
       - run: python -m pytest tests -q --basetemp=work/ci-tests
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          # Includes the October 2026 fixes (22.23.4+) even if the runner cache is older.
+          check-latest: true
       - run: node --test tests/test_conversation_ui.cjs tests/test_live_ui.cjs
       - run: python scripts/prepare_release.py --check-only
       # MySQL integration and desktop packaging require the native MySQL SDK.

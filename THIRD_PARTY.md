@@ -21,6 +21,8 @@ C++ 依赖下载地址和 SHA-256 见 `native/dependencies.json`，许可文本�
 
 桌面构建复制原生和 Python 依赖许可到 `THIRD_PARTY_LICENSES`；清单可能包含构建环境中的可选依赖。此表是主要组件摘要，不替代完整随包许可。
 
+2026 年 10 月的 emSign 事件后，构建脚本按 SHA-256 指纹从打包副本的 gRPC `roots.pem` 中移除 `emSign ECC Root CA - G3`，其他证书及原有说明不变。此调整不修改 gRPC 库代码和开发环境中的原始文件，处理代码见 `scripts/check_tls_trust.py`，影响范围见[安全依赖更新](docs/SECURITY_UPDATES.md)。
+
 ## 本地 embedding 模型
 
 使用 Apache-2.0 模型 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`，由 Xenova 转换为 ONNX。转换固定于版本 `2c4055b12046f11709e9df2c122e59ffbdc2f900`。

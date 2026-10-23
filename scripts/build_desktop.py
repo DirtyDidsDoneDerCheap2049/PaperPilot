@@ -7,6 +7,34 @@ import sys
 
 ROOT=Path(__file__).resolve().parents[1]
 
+
+def ssl_runtime_resources():
+    """Keep vendor-provided OpenSSL distrust data referenced by ssl.py."""
+    import ssl
+    source = Path(ssl.__file__)
+    resource = source.with_name('codex-rejected-cas.pem')
+    if resource.is_file():
+        return [resource]
+    if 'codex-rejected-cas.pem' in source.read_text(encoding='utf-8'):
+        raise RuntimeError('Python SSL runtime is missing its distrust data')
+    return []
+
+
+def prepare_runtime_trust(output):
+    """Patch only the frozen output; never change a dependency installation."""
+    import shutil
+    from check_tls_trust import check_desktop, filter_distrusted_roots
+    output = Path(output)
+    for resource in ssl_runtime_resources():
+        shutil.copy2(resource, output/'_internal'/resource.name)
+    grpc_roots = output/'_internal/grpc/_cython/_credentials/roots.pem'
+    if grpc_roots.is_file():
+        data = grpc_roots.read_bytes()
+        filtered = filter_distrusted_roots(data)
+        if filtered != data:
+            grpc_roots.write_bytes(filtered)
+    return check_desktop(output)
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--local-workspace',action='store_true',help='Also update dist/PaperPilot.exe using the existing local workspace')
@@ -14,6 +42,8 @@ def main():
     dist_dir='dist/public-desktop'
     if os.name != 'nt':
         raise SystemExit('This release build targets Windows.')
+    from check_tls_trust import check_environment
+    check_environment()
     if not (ROOT/'build/reader_tasks.exe').is_file():
         subprocess.run([sys.executable,str(ROOT/'scripts/build_native.py')],check=True)
     subprocess.run([sys.executable,str(ROOT/'scripts/prepare_embedding_model.py')],check=True)
@@ -36,10 +66,13 @@ def main():
              '--hidden-import','uvicorn.lifespan.on',str(ROOT/'src/app/desktop.py')]
     for library in (ROOT/'build').glob('*.dll'):
         command.extend(['--add-binary',f'{library};build'])
+    for resource in ssl_runtime_resources():
+        command.extend(['--add-data',f'{resource};.'])
     subprocess.run(command,cwd=ROOT,check=True)
     from importlib.metadata import distributions
     import shutil
     output=ROOT/dist_dir/'AIReader'
+    prepare_runtime_trust(output)
     # The public build stays independent of the local workspace selector.
     licenses=output/'THIRD_PARTY_LICENSES'
     shutil.copytree(ROOT/'native/licenses',licenses,dirs_exist_ok=True)
@@ -55,7 +88,7 @@ def main():
                 if source.is_file():shutil.copy2(source,dest)
     for name in ('LICENSE','README.md','README.en.md','THIRD_PARTY.md'):
         shutil.copy2(ROOT/name,output/name)
-    for name in ('INDEX.md','WORKSPACES.md','RELEASE_CHECKS.md','LOCAL_RETRIEVAL_BENCHMARK.md',
+    for name in ('INDEX.md','WORKSPACES.md','RELEASE_CHECKS.md','SECURITY_UPDATES.md','LOCAL_RETRIEVAL_BENCHMARK.md',
                  'FULLTEXT_RETRIEVAL.md','ARCHITECTURE.md','ADAPTIVE_RESEARCH.md','LIBRARY_ORGANIZATION.md','PRODUCT_PURPOSE.md','DOMAIN_PROFILES.md','MYSQL.md','WORKSPACE_GUIDE.md','PUBLISHING.md','RELEASE_NOTES.md','MODEL_OUTPUT.md','MODEL_COST.md','RUNTIME_PERFORMANCE.md'):
         dest=output/'docs'/name
         dest.parent.mkdir(exist_ok=True)

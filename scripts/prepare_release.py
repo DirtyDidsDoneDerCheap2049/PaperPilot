@@ -12,6 +12,7 @@ TREES=('src','native','tests','.github','docs/assets')
 FILES=('README.md','README.en.md','LICENSE','THIRD_PARTY.md','.gitignore','requirements.txt',
        'requirements-dev.txt','requirements-vector.txt','requirements-lock-windows-py312.txt',
        'scripts/build_native.py','scripts/build_desktop.py','scripts/update_local_desktop.py','scripts/create_icon.py','scripts/prepare_release.py','scripts/refresh_release.py',
+       'scripts/check_tls_trust.py','docs/SECURITY_UPDATES.md',
        'scripts/backup_workspace.py','scripts/migrate_mysql.py','scripts/backup_mysql.py','scripts/rewrite_latest_report.py',
        'scripts/inspect_research_run.py','scripts/validate_adaptive_research.py',
        'scripts/prepare_embedding_model.py','scripts/index_papers.py','scripts/benchmark_local_retrieval.py',
@@ -88,6 +89,11 @@ def main():
     if args.desktop:
         folder=args.desktop.resolve()
         if not (folder/'AIReader.exe').is_file():raise RuntimeError('Desktop executable missing')
+        if __package__:
+            from .check_tls_trust import check_desktop
+        else:
+            from check_tls_trust import check_desktop
+        check_desktop(folder)
         files=[p for p in folder.rglob('*') if p.is_file()]
         forbidden={'.env','.secrets.json','.database.json','.history-import.json','reader-workspace.json'}
         for p in files:

@@ -31,6 +31,7 @@
 | --- | --- |
 | [项目目录](WORKSPACES.md) | 源码、程序、数据、测试和清理规则 |
 | [发布检查](RELEASE_CHECKS.md) | 离线、桌面、在线及恢复验收 |
+| [安全依赖更新](SECURITY_UPDATES.md) | 证书信任库与运行时安全更新、影响范围及验证 |
 | [发布指南](PUBLISHING.md) | 构建、公开导出、Git 与 Release |
 | [版本记录](RELEASE_NOTES.md) | 版本变化摘要与未发布草稿 |
 | [第三方说明](../THIRD_PARTY.md) | 依赖、模型及许可 |

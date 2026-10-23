@@ -15,6 +15,8 @@ node --test tests/test_conversation_ui.cjs tests/test_live_ui.cjs
 
 检查依赖锁、未定义名称、文档链接和新增文件。MySQL、符号链接权限及显式软件包测试可能按环境跳过，记录原因，不能用总通过数掩盖这些范围。
 
+证书库执行 `work/.venv/Scripts/python.exe scripts/check_tls_trust.py`。桌面包额外执行 `work/.venv/Scripts/python.exe scripts/check_tls_trust.py --desktop dist/public-desktop/AIReader`；构建和发布导出也会检查。Node.js 使用已包含十月安全修复的受支持补丁版本，详见[安全依赖更新](SECURITY_UPDATES.md)。
+
 ## 桌面包
 
 ```powershell
